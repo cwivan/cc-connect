@@ -2005,6 +2005,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	// Multi-workspace resolution
 	var wsAgent Agent
 	var wsSessions *SessionManager
+	var resolvedInteractiveKey string
 	var resolvedWorkspace string
 	if e.multiWorkspace {
 		channelID := effectiveChannelID(msg)
@@ -2039,7 +2040,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 
 			var effectiveWorkspace string
-			wsAgent, wsSessions, _, effectiveWorkspace, err = e.workspaceContext(workspace, msg.SessionKey)
+			wsAgent, wsSessions, resolvedInteractiveKey, effectiveWorkspace, err = e.workspaceContext(workspace, msg.SessionKey)
 			if err != nil {
 				slog.Error("failed to create workspace agent", "workspace", workspace, "err", err)
 				e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", err))
@@ -2056,7 +2057,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	if e.multiWorkspace && wsSessions != nil {
 		sessions = wsSessions
 		agent = wsAgent
-		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
+		interactiveKey = resolvedInteractiveKey
 	}
 
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {

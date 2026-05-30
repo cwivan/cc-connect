@@ -3,6 +3,9 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -123,6 +126,43 @@ func TestAppServerSession_HandleThreadTokenUsageUpdatedCachesContextUsage(t *tes
 	}
 	if usage.InputTokens != 40849 {
 		t.Fatalf("input tokens = %d, want 40849", usage.InputTokens)
+	}
+}
+
+func TestAppServerSession_CompleteTurnPatchesSessionSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	codexHome := filepath.Join(tmpDir, ".codex")
+	sessionID := "app-server-visible-session"
+	rolloutDir := filepath.Join(codexHome, "sessions")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(rolloutDir, "rollout-"+sessionID+".jsonl")
+	firstLine := `{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `","source":"app_server","originator":"codex_app_server","cwd":"/tmp"}}`
+	if err := os.WriteFile(rolloutPath, []byte(firstLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &appServerSession{
+		codexHome:   codexHome,
+		events:      make(chan core.Event, 1),
+		pendingMsgs: []string{},
+		currentTurn: "turn-1",
+	}
+	s.threadID.Store(sessionID)
+
+	s.completeTurn()
+
+	data, err := os.ReadFile(rolloutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.Contains(line, `"source":"vscode"`) {
+		t.Fatalf("session source was not patched: %s", line)
+	}
+	if !strings.Contains(line, `"originator":"Codex Desktop"`) {
+		t.Fatalf("session originator was not patched: %s", line)
 	}
 }
 

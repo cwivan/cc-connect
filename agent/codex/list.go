@@ -263,9 +263,13 @@ func getSessionHistory(sessionID, codexHome string, limit int) ([]core.HistoryEn
 	return entries, nil
 }
 
+const (
+	codexAppVisibleSource     = "vscode"
+	codexAppVisibleOriginator = "Codex Desktop"
+)
+
 // patchSessionSource rewrites the session_meta line in a Codex JSONL transcript
-// so that source="cli" and originator="codex_cli_rs", making the session visible
-// in the interactive `codex` terminal.
+// so threads created through cc-connect show up in Codex Desktop/App.
 func patchSessionSource(sessionID, codexHome string) {
 	path := findSessionFile(sessionID, codexHome)
 	if path == "" {
@@ -283,13 +287,10 @@ func patchSessionSource(sessionID, codexHome string) {
 	}
 	firstLine := data[:idx]
 
-	// Only patch if it's actually an exec-sourced session
-	if !bytes.Contains(firstLine, []byte(`"source":"exec"`)) {
+	patched, ok := patchSessionMetaSource(firstLine)
+	if !ok {
 		return
 	}
-
-	patched := bytes.Replace(firstLine, []byte(`"source":"exec"`), []byte(`"source":"cli"`), 1)
-	patched = bytes.Replace(patched, []byte(`"originator":"codex_exec"`), []byte(`"originator":"codex_cli_rs"`), 1)
 
 	if bytes.Equal(patched, firstLine) {
 		return
@@ -300,6 +301,47 @@ func patchSessionSource(sessionID, codexHome string) {
 	out = append(out, data[idx:]...)
 
 	_ = os.WriteFile(path, out, 0o644)
+}
+
+func patchSessionMetaSource(line []byte) ([]byte, bool) {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return nil, false
+	}
+
+	var typ string
+	if raw := entry["type"]; raw == nil || json.Unmarshal(raw, &typ) != nil || typ != "session_meta" {
+		return nil, false
+	}
+
+	var payload map[string]any
+	if raw := entry["payload"]; raw == nil || json.Unmarshal(raw, &payload) != nil {
+		return nil, false
+	}
+
+	source, _ := payload["source"].(string)
+	originator, _ := payload["originator"].(string)
+	if source == codexAppVisibleSource && originator == codexAppVisibleOriginator {
+		return nil, false
+	}
+	if source != "exec" && source != "app_server" {
+		return nil, false
+	}
+
+	payload["source"] = codexAppVisibleSource
+	payload["originator"] = codexAppVisibleOriginator
+
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	entry["payload"] = rawPayload
+
+	patched, err := json.Marshal(entry)
+	if err != nil {
+		return nil, false
+	}
+	return patched, true
 }
 
 // isUserPrompt returns true if the text looks like an actual user prompt

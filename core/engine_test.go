@@ -4289,6 +4289,91 @@ func TestWorkspaceContext_PerChannelIndependence(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_MultiWorkspaceDirOverrideUsesStableInteractiveKey(t *testing.T) {
+	agentName := "test-handle-message-stable-interactive-key"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		agent := &namedStubWorkDirAgent{name: agentName}
+		if workDir, ok := opts["work_dir"].(string); ok {
+			agent.workDir = workDir
+		}
+		return agent, nil
+	})
+
+	baseDir := t.TempDir()
+	boundDir := filepath.Join(baseDir, "bound")
+	overrideDir := filepath.Join(baseDir, "override")
+	if err := os.MkdirAll(boundDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	boundDir = normalizeWorkspacePath(boundDir)
+	overrideDir = normalizeWorkspacePath(overrideDir)
+
+	p := &stubPlatformEngine{n: "discord"}
+	e := NewEngine("test", &namedStubWorkDirAgent{name: agentName}, []Platform{p}, "", LangEnglish)
+	e.SetMultiWorkspace(baseDir, filepath.Join(t.TempDir(), "bindings.json"))
+
+	channelID := "C-stable"
+	msg := &Message{
+		Platform:   "discord",
+		ChannelKey: channelID,
+		SessionKey: "discord:" + channelID + ":U1",
+		UserID:     "U1",
+		UserName:   "user",
+		Content:    "hello",
+		ReplyCtx:   "ctx",
+	}
+	channelKey := workspaceChannelKey(msg.Platform, channelID)
+	e.workspaceBindings.Bind("project:test", channelKey, "chan", boundDir)
+
+	stableKey := boundDir + ":" + msg.SessionKey
+	store := NewProjectStateStore(filepath.Join(t.TempDir(), "projects", "test.state.json"))
+	store.SetWorkspaceDirOverride(stableKey, overrideDir)
+	store.Save()
+	e.SetProjectStateStore(store)
+
+	wsAgent, wsSessions, stableFromContext, effectiveDir, err := e.workspaceContext(boundDir, msg.SessionKey)
+	if err != nil {
+		t.Fatalf("workspaceContext: %v", err)
+	}
+	if stableFromContext != stableKey {
+		t.Fatalf("workspaceContext interactiveKey = %q, want %q", stableFromContext, stableKey)
+	}
+	if effectiveDir != overrideDir {
+		t.Fatalf("workspaceContext effectiveDir = %q, want %q", effectiveDir, overrideDir)
+	}
+
+	session := newResultAgentSession("ok")
+	ws := e.workspacePool.GetOrCreate(overrideDir)
+	ws.agent = &resultAgent{session: session}
+	ws.sessions = wsSessions
+	_ = wsAgent
+
+	e.handleMessage(p, msg)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		e.interactiveMu.Lock()
+		stateAtStable := e.interactiveStates[stableKey]
+		stateAtOverride := e.interactiveStates[overrideDir+":"+msg.SessionKey]
+		e.interactiveMu.Unlock()
+		if stateAtStable != nil {
+			if stateAtOverride != nil {
+				t.Fatalf("unexpected override-key state for %q", overrideDir+":"+msg.SessionKey)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for stable interactive state; sent=%v", p.getSent())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 func TestCmdDir_ShowsCurrentDirectory(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubWorkDirAgent{workDir: "/tmp/project-a"}

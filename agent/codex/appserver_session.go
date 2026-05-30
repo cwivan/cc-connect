@@ -303,6 +303,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		}
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 		s.threadID.Store(resp.Thread.ID)
+		s.patchCurrentThreadSource()
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
 		return nil
 	}
@@ -316,6 +317,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	}
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 	s.threadID.Store(resp.Thread.ID)
+	s.patchCurrentThreadSource()
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
 }
@@ -1303,8 +1305,15 @@ func (s *appServerSession) completeTurn() {
 	}
 	s.currentTurn = ""
 	s.stateMu.Unlock()
+	s.patchCurrentThreadSource()
 	s.flushPendingAsText()
 	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
+}
+
+func (s *appServerSession) patchCurrentThreadSource() {
+	if sid := s.CurrentSessionID(); sid != "" {
+		patchSessionSource(sid, s.codexHome)
+	}
 }
 
 func (s *appServerSession) flushPendingAsThinking() {
