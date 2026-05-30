@@ -4785,7 +4785,7 @@ var builtinCommands = []struct {
 	{[]string{"whoami", "myid"}, "whoami"},
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
-	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"ps", "btw", "guide"}, "ps"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -4802,7 +4802,7 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
-	// /ps is only meaningful as a supplement to a turn already in flight.
+	// /guide (/ps alias) is only meaningful as a supplement to a turn already in flight.
 	// When the session is idle, injecting via agentSession.Send bypasses the
 	// session lock and races with concurrent normal messages on the CLI's
 	// stdin, so reject instead.
@@ -7388,7 +7388,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/skills", action: "nav:/skills"},
 				{command: "/compress", action: "cmd:/compress"},
 				{command: "/stop", action: "act:/stop"},
-				{command: "/ps", action: "cmd:/ps"},
+				{command: "/guide", action: "cmd:/guide"},
 			},
 		},
 		{

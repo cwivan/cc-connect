@@ -945,6 +945,54 @@ func TestBuildPreviewCardJSON_ProgressPayloadUsesStructuredCard(t *testing.T) {
 	}
 }
 
+func TestBuildPreviewCardJSON_ProgressPayloadDoesNotUseLargeHeaderTitle(t *testing.T) {
+	payload := core.BuildProgressCardPayloadV2([]core.ProgressCardEntry{
+		{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: "echo hi"},
+	}, false, "Codex", core.LangEnglish, core.ProgressCardStateRunning)
+
+	cardJSON := buildPreviewCardJSON(payload)
+	var card map[string]any
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		t.Fatalf("card JSON is invalid: %v", err)
+	}
+
+	header, ok := card["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected header in card json, got %#v", card["header"])
+	}
+	title, ok := header["title"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected header title in card json, got %#v", header["title"])
+	}
+	if got := title["content"]; got != "" {
+		t.Fatalf("progress header title content = %#v, want empty to avoid large title text", got)
+	}
+
+	body, ok := card["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected body in card json, got %#v", card["body"])
+	}
+	elements, ok := body["elements"].([]any)
+	if !ok || len(elements) == 0 {
+		t.Fatalf("expected body elements in card json, got %#v", body["elements"])
+	}
+	status, ok := elements[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first body element to be status map, got %#v", elements[0])
+	}
+	statusText, ok := status["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first body element text, got %#v", status["text"])
+	}
+	if got := statusText["text_size"]; got != "notation" {
+		t.Fatalf("progress status text_size = %#v, want notation", got)
+	}
+	content, ok := statusText["content"].(string)
+	if !ok || !strings.Contains(content, "Running") {
+		t.Fatalf("progress status content = %#v, want running status", statusText["content"])
+	}
+}
+
 func TestBuildRichCard_RendersThinkingAndToolResultRows(t *testing.T) {
 	code := 0
 	success := true
@@ -969,6 +1017,77 @@ func TestBuildRichCard_RendersThinkingAndToolResultRows(t *testing.T) {
 	}
 	if strings.Contains(cardJSON, core.ProgressCardPayloadPrefix) {
 		t.Fatalf("rich card should not contain progress payload prefix, got %q", cardJSON)
+	}
+}
+
+func TestBuildRichCard_UsesSmallTextForToolPanelRows(t *testing.T) {
+	cardJSON := buildRichCard(core.CardStatusWorking, "", []core.ToolStep{
+		{Kind: core.ToolStepKindThinking, Name: "Thinking", Summary: "Inspecting event routing"},
+		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "echo hi"},
+	}, "", true, time.Second)
+
+	var card map[string]any
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		t.Fatalf("card JSON is invalid: %v", err)
+	}
+	body, ok := card["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected body map, got %#v", card["body"])
+	}
+	bodyElements, ok := body["elements"].([]any)
+	if !ok || len(bodyElements) == 0 {
+		t.Fatalf("expected body elements, got %#v", body["elements"])
+	}
+	panel, ok := bodyElements[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected panel map, got %#v", bodyElements[0])
+	}
+	panelElements, ok := panel["elements"].([]any)
+	if !ok || len(panelElements) == 0 {
+		t.Fatalf("expected panel elements, got %#v", panel["elements"])
+	}
+	for i, raw := range panelElements {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("panel element %d is not a map: %#v", i, raw)
+		}
+		if row["tag"] != "div" {
+			continue
+		}
+		if got := row["text_size"]; got != "notation" {
+			t.Fatalf("panel row %d text_size = %#v, want notation", i, got)
+		}
+	}
+}
+
+func TestBuildRichCard_DoesNotUseLargeTitlesForToolStatus(t *testing.T) {
+	cardJSON := buildRichCard(core.CardStatusWorking, "", []core.ToolStep{
+		{Kind: core.ToolStepKindThinking, Name: "Thinking", Summary: "Inspecting event routing"},
+		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "echo hi"},
+	}, "", true, time.Second)
+
+	var card map[string]any
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		t.Fatalf("card JSON is invalid: %v", err)
+	}
+	header, ok := card["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected card header, got %#v", card["header"])
+	}
+	title, ok := header["title"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected card header title, got %#v", header["title"])
+	}
+	if got := title["content"]; got != "" {
+		t.Fatalf("card header title content = %#v, want empty to avoid large title text", got)
+	}
+
+	body := card["body"].(map[string]any)
+	panel := body["elements"].([]any)[0].(map[string]any)
+	panelHeader := panel["header"].(map[string]any)
+	panelTitle := panelHeader["title"].(map[string]any)
+	if got := panelTitle["content"]; got != "" {
+		t.Fatalf("panel title content = %#v, want empty to avoid large title text", got)
 	}
 }
 

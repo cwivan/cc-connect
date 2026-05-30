@@ -13031,6 +13031,14 @@ func TestBtwAlias_ResolvesToPs(t *testing.T) {
 	}
 }
 
+// TestGuideAlias_ResolvesToPs verifies that /guide sends live guidance to the running task.
+func TestGuideAlias_ResolvesToPs(t *testing.T) {
+	id := matchPrefix("guide", builtinCommands)
+	if id != "ps" {
+		t.Fatalf("matchPrefix(\"guide\") = %q, want \"ps\"", id)
+	}
+}
+
 func TestHandlePendingPermission_AskQuestion_EmptyContentRejected(t *testing.T) {
 	// Regression test for #1086: empty or whitespace-only messages must NOT
 	// be accepted as AskUserQuestion answers. Some platforms deliver read-receipts

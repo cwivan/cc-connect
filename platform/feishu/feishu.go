@@ -3535,7 +3535,17 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 	agent := progressAgentLabel(payload.Agent)
 	title, template, footer := progressStateMeta(payload.State, payload.Lang, agent)
 
-	elements := make([]map[string]any, 0, len(items)+3)
+	elements := make([]map[string]any, 0, len(items)+5)
+	elements = append(elements, map[string]any{
+		"tag": "div",
+		"text": map[string]any{
+			"tag":        "plain_text",
+			"content":    title,
+			"text_size":  "notation",
+			"text_color": "grey",
+		},
+	})
+	elements = append(elements, map[string]any{"tag": "hr"})
 	if payload.Truncated {
 		truncatedText := "Showing latest updates only."
 		if isZhLikeProgressLang(payload.Lang) {
@@ -3580,7 +3590,7 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 		"header": map[string]any{
 			"title": map[string]any{
 				"tag":     "plain_text",
-				"content": title,
+				"content": "",
 			},
 			"template": template,
 		},
@@ -4145,52 +4155,6 @@ func formatElapsedCN(d time.Duration) string {
 // tool-step panel, streaming markdown body, status-colored header, and
 // an elapsed-time footer.
 func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, elapsed time.Duration) string {
-	panelTitle := "Thinking..."
-	if len(steps) > 0 {
-		if streaming {
-			toolCount := 0
-			for _, step := range steps {
-				if step.Kind != core.ToolStepKindThinking {
-					toolCount++
-				}
-			}
-			if toolCount > 0 {
-				panelTitle = fmt.Sprintf("Working on it (%d steps)", len(steps))
-			}
-		} else {
-			toolCounts := make(map[string]int)
-			var toolOrder []string
-			for _, s := range steps {
-				name := richStepDisplayName(s)
-				if toolCounts[name] == 0 {
-					toolOrder = append(toolOrder, name)
-				}
-				toolCounts[name]++
-			}
-			var toolParts []string
-			for _, name := range toolOrder {
-				if toolCounts[name] > 1 {
-					toolParts = append(toolParts, fmt.Sprintf("%s×%d", name, toolCounts[name]))
-				} else {
-					toolParts = append(toolParts, name)
-				}
-			}
-			toolSummary := strings.Join(toolParts, ", ")
-			preview := strings.TrimSpace(markdown)
-			if idx := strings.IndexByte(preview, '\n'); idx > 0 {
-				preview = preview[:idx]
-			}
-			if runes := []rune(preview); len(runes) > 20 {
-				preview = string(runes[:20]) + "..."
-			}
-			if preview != "" {
-				panelTitle = fmt.Sprintf("%s · %s", toolSummary, preview)
-			} else {
-				panelTitle = toolSummary
-			}
-		}
-	}
-
 	panelCap := len(steps)
 	if panelCap < 1 {
 		panelCap = 1
@@ -4198,8 +4162,9 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 	panelElements := make([]map[string]any, 0, panelCap)
 	if len(steps) == 0 {
 		panelElements = append(panelElements, map[string]any{
-			"tag":  "div",
-			"text": map[string]any{"tag": "plain_text", "content": "Thinking..."},
+			"tag":       "div",
+			"text_size": "notation",
+			"text":      map[string]any{"tag": "plain_text", "content": "Thinking..."},
 		})
 	} else {
 		// Cap the number of step rows so the collapsible panel doesn't
@@ -4215,15 +4180,17 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		for _, step := range visible {
 			summary := richStepBody(step)
 			panelElements = append(panelElements, map[string]any{
-				"tag":  "div",
-				"icon": map[string]any{"tag": "standard_icon", "token": getToolIcon(step.Name)},
-				"text": map[string]any{"tag": "plain_text", "content": summary},
+				"tag":       "div",
+				"text_size": "notation",
+				"icon":      map[string]any{"tag": "standard_icon", "token": getToolIcon(step.Name)},
+				"text":      map[string]any{"tag": "plain_text", "content": summary},
 			})
 		}
 		if overflow > 0 {
 			panelElements = append(panelElements, map[string]any{
-				"tag":  "div",
-				"text": map[string]any{"tag": "plain_text", "content": fmt.Sprintf("… and %d more steps", overflow)},
+				"tag":       "div",
+				"text_size": "notation",
+				"text":      map[string]any{"tag": "plain_text", "content": fmt.Sprintf("… and %d more steps", overflow)},
 			})
 		}
 	}
@@ -4233,7 +4200,7 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		"expanded":         streaming,
 		"background_color": "grey",
 		"header": map[string]any{
-			"title": map[string]any{"tag": "plain_text", "content": panelTitle},
+			"title": map[string]any{"tag": "plain_text", "content": ""},
 		},
 		"border":           map[string]any{"color": "grey"},
 		"vertical_spacing": "8px",
@@ -4276,17 +4243,13 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 
 	// Header template color follows status.
 	headerTemplate := "blue"
-	headerTitle := pickThinkingVerb()
 	switch status {
 	case core.CardStatusDone:
 		headerTemplate = "green"
-		headerTitle = "Done"
 	case core.CardStatusError:
 		headerTemplate = "red"
-		headerTitle = "Error"
 	case core.CardStatusThinking, core.CardStatusWorking:
 		headerTemplate = "blue"
-		headerTitle = pickThinkingVerb()
 	}
 
 	card := map[string]any{
@@ -4298,7 +4261,7 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		},
 		"header": map[string]any{
 			"template": headerTemplate,
-			"title":    map[string]any{"tag": "plain_text", "content": headerTitle},
+			"title":    map[string]any{"tag": "plain_text", "content": ""},
 		},
 		"body": map[string]any{"elements": elements},
 	}
