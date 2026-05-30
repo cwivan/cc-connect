@@ -3046,6 +3046,33 @@ func TestCmdList_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	}
 }
 
+func TestRenderListCard_DisplaysSessionTimeInLocalTimezone(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	t.Cleanup(func() { time.Local = oldLocal })
+
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	sessions := []AgentSessionInfo{{
+		ID:           "session-a",
+		Summary:      "First session",
+		MessageCount: 3,
+		ModifiedAt:   time.Date(2026, 3, 11, 2, 0, 0, 0, time.UTC),
+	}}
+	e := NewEngine("test", &stubListAgent{sessions: sessions}, []Platform{p}, "", LangEnglish)
+
+	card, err := e.renderListCard("feishu:user1", 1)
+	if err != nil {
+		t.Fatalf("renderListCard() error = %v", err)
+	}
+	text := card.RenderText()
+	if !strings.Contains(text, "03-11 10:00") {
+		t.Fatalf("card text = %q, want local time 03-11 10:00", text)
+	}
+	if strings.Contains(text, "03-11 02:00") {
+		t.Fatalf("card text = %q, should not show raw UTC time", text)
+	}
+}
+
 func TestCmdCurrent_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -5890,9 +5917,9 @@ func (s *controllableAgentSession) Close() error {
 
 // controllableAgent lets tests control which session is returned by StartSession.
 type controllableAgent struct {
-	nextSession     AgentSession
-	listFn          func() ([]AgentSessionInfo, error)
-	startSessionFn  func(ctx context.Context, sessionID string) (AgentSession, error)
+	nextSession    AgentSession
+	listFn         func() ([]AgentSessionInfo, error)
+	startSessionFn func(ctx context.Context, sessionID string) (AgentSession, error)
 }
 
 func (a *controllableAgent) Name() string { return "controllable" }

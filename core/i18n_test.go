@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -49,6 +50,29 @@ func TestI18n_Tf(t *testing.T) {
 	}
 }
 
+func TestI18n_ToolTemplateAvoidsLargeMarkdownTitle(t *testing.T) {
+	langs := []Language{
+		LangEnglish,
+		LangChinese,
+		LangTraditionalChinese,
+		LangJapanese,
+		LangSpanish,
+	}
+
+	for _, lang := range langs {
+		t.Run(string(lang), func(t *testing.T) {
+			i := NewI18n(lang)
+			got := i.Tf(MsgTool, 1, "Bash", "```bash\necho hi\n```")
+			if strings.Contains(got, "**") {
+				t.Fatalf("tool template contains bold markdown title markers: %q", got)
+			}
+			if strings.Contains(got, "\n---\n") {
+				t.Fatalf("tool template contains markdown divider after title: %q", got)
+			}
+		})
+	}
+}
+
 func TestI18n_AllKeysHaveEnglish(t *testing.T) {
 	for key, langs := range messages {
 		if _, ok := langs[LangEnglish]; !ok {
@@ -59,7 +83,7 @@ func TestI18n_AllKeysHaveEnglish(t *testing.T) {
 
 func TestDetectLanguage(t *testing.T) {
 	tests := []struct {
-		text    string
+		text     string
 		wantLang Language
 	}{
 		// Japanese Hiragana
