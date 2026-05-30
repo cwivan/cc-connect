@@ -5351,6 +5351,13 @@ func formatHistoryEntryTime(t time.Time) string {
 	return t.Local().Format("15:04:05")
 }
 
+func shortSessionID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
+}
+
 func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -5418,6 +5425,9 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 					displayName = string([]rune(displayName)[:40]) + "…"
 				}
 			}
+			if sid := shortSessionID(s.ID); sid != "" {
+				displayName = fmt.Sprintf("%s (`%s`)", displayName, sid)
+			}
 			sb.WriteString(fmt.Sprintf("%s **%d.** %s · **%d** msgs · %s\n",
 				marker, i+1, displayName, s.MessageCount, formatSessionListTime(s.ModifiedAt)))
 		}
@@ -5469,6 +5479,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	slog.Info("cmdSwitch: matched session", "session_key", msg.SessionKey, "agent_session", matched.ID, "summary", matched.Summary)
 	slog.Info("cmdSwitch: cleaning up old session", "session_key", msg.SessionKey)
 	e.cleanupInteractiveState(interactiveKey)
 	slog.Info("cmdSwitch: cleanup done", "session_key", msg.SessionKey)
@@ -5476,10 +5487,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	session := sessions.SwitchToAgentSession(msg.SessionKey, matched.ID, agent.Name(), matched.Summary)
 	session.ClearHistory()
 
-	shortID := matched.ID
-	if len(shortID) > 12 {
-		shortID = shortID[:12]
-	}
+	shortID := shortSessionID(matched.ID)
 	displayName := sessions.GetSessionName(matched.ID)
 	if displayName == "" {
 		displayName = matched.Summary
@@ -10586,11 +10594,14 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 		if s.ID == activeAgentID {
 			btnType = "primary"
 		}
+		if sid := shortSessionID(s.ID); sid != "" {
+			displayName = fmt.Sprintf("%s (`%s`)", displayName, sid)
+		}
 		cb.ListItemBtn(
 			e.i18n.Tf(MsgListItem, marker, i+1, displayName, s.MessageCount, formatSessionListTime(s.ModifiedAt)),
 			fmt.Sprintf("#%d", i+1),
 			btnType,
-			fmt.Sprintf("act:/switch %d", i+1),
+			fmt.Sprintf("act:/switch %s", s.ID),
 		)
 	}
 

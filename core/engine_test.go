@@ -5519,12 +5519,15 @@ func TestRenderListCard_MakesEveryVisibleSessionClickable(t *testing.T) {
 		t.Fatalf("switch action count = %d, want %d", got, len(sessions))
 	}
 
-	btn, ok := findCardAction(card, "act:/switch 6")
+	btn, ok := findCardAction(card, "act:/switch agent-session-F")
 	if !ok {
 		t.Fatal("expected active session switch action to exist")
 	}
 	if btn.Type != "primary" {
 		t.Fatalf("active session button type = %q, want primary", btn.Type)
+	}
+	if text := card.RenderText(); !strings.Contains(text, "agent-sessio") {
+		t.Fatalf("list card text = %q, want short session id", text)
 	}
 }
 
@@ -13186,7 +13189,7 @@ func TestHandleCardNav_SwitchActionShowsSelectedSessionHistory(t *testing.T) {
 	}
 	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
 
-	card := e.handleCardNav("act:/switch 2", "test:ch:user1")
+	card := e.handleCardNav("act:/switch sess-bbb", "test:ch:user1")
 	if card == nil {
 		t.Fatal("handleCardNav returned nil")
 	}
