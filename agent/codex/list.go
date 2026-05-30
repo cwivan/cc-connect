@@ -324,7 +324,10 @@ func patchSessionMetaSource(line []byte) ([]byte, bool) {
 	if source == codexAppVisibleSource && originator == codexAppVisibleOriginator {
 		return nil, false
 	}
-	if source != "exec" && source != "app_server" {
+	patchable := source == "exec" ||
+		source == "app_server" ||
+		(source == "cli" && originator == codexAppVisibleOriginator)
+	if !patchable {
 		return nil, false
 	}
 

@@ -88,6 +88,39 @@ func TestPatchSessionSource_AppServerSource(t *testing.T) {
 	}
 }
 
+func TestPatchSessionSource_CLISourceWithDesktopOriginator(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "test-cli-desktop-originator-abc123"
+	sessionsDir := filepath.Join(tmpDir, ".codex", "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fname := filepath.Join(sessionsDir, "rollout-"+sessionID+".jsonl")
+	line1 := `{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `","source":"cli","originator":"Codex Desktop","cwd":"/tmp"}}`
+	line2 := `{"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"role":"user"}}`
+	if err := os.WriteFile(fname, []byte(line1+"\n"+line2+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patchSessionSource(sessionID, filepath.Join(tmpDir, ".codex"))
+
+	data, err := os.ReadFile(fname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if !strings.Contains(lines[0], `"source":"vscode"`) {
+		t.Errorf("expected source:vscode, got first line: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], `"originator":"Codex Desktop"`) {
+		t.Errorf("expected originator:Codex Desktop, got first line: %s", lines[0])
+	}
+	if lines[1] != line2 {
+		t.Errorf("second line changed: %s", lines[1])
+	}
+}
+
 func TestPatchSessionSource_Idempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionID := "test-idempotent-xyz"
