@@ -9543,6 +9543,9 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/new":
 		return e.renderCurrentCard(sessionKey)
 	case "/switch":
+		if prefix == "act" {
+			return e.renderHistoryCard(sessionKey)
+		}
 		return e.renderListCardSafe(sessionKey, 1)
 	case "/delete-mode":
 		if strings.HasPrefix(args, "cancel") {

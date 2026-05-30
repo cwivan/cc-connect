@@ -10329,10 +10329,15 @@ func TestWorkspace_NoArgs_IgnoresMissingSharedBinding(t *testing.T) {
 type switchableAgent struct {
 	stubAgent
 	sessions []AgentSessionInfo
+	history  map[string][]HistoryEntry
 }
 
 func (a *switchableAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
 	return a.sessions, nil
+}
+
+func (a *switchableAgent) GetSessionHistory(_ context.Context, sessionID string, _ int) ([]HistoryEntry, error) {
+	return a.history[sessionID], nil
 }
 
 func TestCmdSwitch_NoArgs_ShowsUsage(t *testing.T) {
@@ -13028,6 +13033,35 @@ func TestBtwAlias_ResolvesToPs(t *testing.T) {
 	id2 := matchPrefix("ps", builtinCommands)
 	if id2 != "ps" {
 		t.Fatalf("matchPrefix(\"ps\") = %q, want \"ps\"", id2)
+	}
+}
+
+func TestHandleCardNav_SwitchActionShowsSelectedSessionHistory(t *testing.T) {
+	agent := &switchableAgent{
+		sessions: []AgentSessionInfo{
+			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
+			{ID: "sess-bbb", Summary: "Second session", MessageCount: 3},
+		},
+		history: map[string][]HistoryEntry{
+			"sess-bbb": {
+				{Role: "user", Content: "selected historical prompt", Timestamp: time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)},
+				{Role: "assistant", Content: "selected historical answer", Timestamp: time.Date(2026, 5, 30, 10, 1, 0, 0, time.UTC)},
+			},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
+
+	card := e.handleCardNav("act:/switch 2", "test:ch:user1")
+	if card == nil {
+		t.Fatal("handleCardNav returned nil")
+	}
+
+	text := card.RenderText()
+	if !strings.Contains(text, "selected historical prompt") || !strings.Contains(text, "selected historical answer") {
+		t.Fatalf("switch action card = %q, want selected session history", text)
+	}
+	if got := e.sessions.GetOrCreateActive("test:ch:user1").GetAgentSessionID(); got != "sess-bbb" {
+		t.Fatalf("active session ID = %q, want sess-bbb", got)
 	}
 }
 
