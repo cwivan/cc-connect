@@ -5343,6 +5343,13 @@ func formatSessionListTime(t time.Time) string {
 	return t.Local().Format("01-02 15:04")
 }
 
+func formatHistoryEntryTime(t time.Time) string {
+	if t.IsZero() {
+		return "--:--:--"
+	}
+	return t.Local().Format("15:04:05")
+}
+
 func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -7224,7 +7231,7 @@ func (e *Engine) cmdHistory(p Platform, msg *Message, args []string) {
 		if len([]rune(content)) > 200 {
 			content = string([]rune(content)[:200]) + "..."
 		}
-		sb.WriteString(fmt.Sprintf("%s [%s]\n%s\n\n", icon, h.Timestamp.Format("15:04:05"), content))
+		sb.WriteString(fmt.Sprintf("%s [%s]\n%s\n\n", icon, formatHistoryEntryTime(h.Timestamp), content))
 	}
 	e.reply(p, msg.ReplyCtx, sb.String())
 }
@@ -10767,7 +10774,7 @@ func (e *Engine) renderHistoryCard(sessionKey string) *Card {
 		if len([]rune(content)) > 200 {
 			content = string([]rune(content)[:200]) + "..."
 		}
-		sb.WriteString(fmt.Sprintf("%s [%s]\n%s\n\n", icon, h.Timestamp.Format("15:04:05"), content))
+		sb.WriteString(fmt.Sprintf("%s [%s]\n%s\n\n", icon, formatHistoryEntryTime(h.Timestamp), content))
 	}
 
 	return NewCard().

@@ -3098,6 +3098,29 @@ func TestCmdCurrent_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	}
 }
 
+func TestRenderHistoryCard_DisplaysHistoryTimeInLocalTimezone(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	t.Cleanup(func() { time.Local = oldLocal })
+
+	e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
+	sessionKey := "feishu:user1"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.History = append(session.History, HistoryEntry{
+		Role:      "user",
+		Content:   "hello",
+		Timestamp: time.Date(2026, 3, 11, 2, 0, 0, 0, time.UTC),
+	})
+
+	text := e.renderHistoryCard(sessionKey).RenderText()
+	if !strings.Contains(text, "[10:00:00]") {
+		t.Fatalf("history card text = %q, want local time [10:00:00]", text)
+	}
+	if strings.Contains(text, "[02:00:00]") {
+		t.Fatalf("history card text = %q, should not show raw UTC time", text)
+	}
+}
+
 func TestCmdCurrent_ShowsAgentSummaryWhenNoCustomName(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubListAgent{sessions: []AgentSessionInfo{
