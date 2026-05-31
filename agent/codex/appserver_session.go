@@ -162,10 +162,23 @@ const (
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
 )
 
+type appServerRPC interface {
+	request(method string, params any, out any) error
+	Close() error
+}
+
+type appServerRPCConfig struct {
+	workDir       string
+	model         string
+	effort        string
+	baseURL       string
+	modelProvider string
+}
+
 func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string) (*appServerSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
-		url:              url,
+		url:              normalizeAppServerURL(url),
 		workDir:          workDir,
 		model:            model,
 		effort:           effort,
@@ -200,6 +213,39 @@ func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode,
 		slog.Debug("codex app-server: initial rate limit fetch failed", "error", err)
 	}
 
+	return s, nil
+}
+
+func newAppServerClient(ctx context.Context, url, codexHome string, extraEnv []string) (*appServerSession, error) {
+	return newAppServerClientWithConfig(ctx, url, codexHome, extraEnv, appServerRPCConfig{})
+}
+
+func newAppServerClientWithConfig(ctx context.Context, url, codexHome string, extraEnv []string, cfg appServerRPCConfig) (*appServerSession, error) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	s := &appServerSession{
+		url:              normalizeAppServerURL(url),
+		workDir:          cfg.workDir,
+		model:            cfg.model,
+		effort:           cfg.effort,
+		baseURL:          cfg.baseURL,
+		modelProvider:    cfg.modelProvider,
+		codexHome:        strings.TrimSpace(codexHome),
+		extraEnv:         append([]string(nil), extraEnv...),
+		events:           make(chan core.Event, 1),
+		ctx:              sessionCtx,
+		cancel:           cancel,
+		pending:          make(map[int64]chan rpcResponseEnvelope),
+		pendingApprovals: make(map[string]chan core.PermissionResult),
+	}
+	s.alive.Store(true)
+	if err := s.connect(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := s.initialize(); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -265,6 +311,13 @@ func newDesktopAppClient(ctx context.Context, url, codexHome string) (*appServer
 }
 
 func (s *appServerSession) connect() error {
+	if isWebSocketURL(s.url) {
+		return s.connectWebSocket("app_server")
+	}
+	return s.connectManagedAppServer()
+}
+
+func (s *appServerSession) connectManagedAppServer() error {
 	args := []string{"app-server"}
 	if strings.TrimSpace(s.url) != "" {
 		args = append(args, "--listen", strings.TrimSpace(s.url))
@@ -322,24 +375,28 @@ func (s *appServerSession) connect() error {
 }
 
 func (s *appServerSession) connectDesktopApp() error {
+	return s.connectWebSocket("desktop_app")
+}
+
+func (s *appServerSession) connectWebSocket(backend string) error {
 	url := strings.TrimSpace(s.url)
 	if !isWebSocketURL(url) {
-		return fmt.Errorf("codex desktop_app requires a ws:// or wss:// endpoint; set desktop_app_url or app_server_url (got %q)", url)
+		return fmt.Errorf("codex %s requires a ws:// or wss:// endpoint; set %s_url (got %q)", backend, backend, url)
 	}
 
 	conn, resp, err := websocket.DefaultDialer.DialContext(s.ctx, url, nil)
 	if err != nil {
 		if resp != nil {
-			return fmt.Errorf("codex desktop_app connect %s failed: HTTP %s: %w", url, resp.Status, err)
+			return fmt.Errorf("codex %s connect %s failed: HTTP %s: %w", backend, url, resp.Status, err)
 		}
-		return fmt.Errorf("codex desktop_app connect %s failed: %w", url, err)
+		return fmt.Errorf("codex %s connect %s failed: %w", backend, url, err)
 	}
 
 	s.procMu.Lock()
 	s.ws = conn
 	s.procMu.Unlock()
 
-	slog.Info("codex desktop_app session connected", "transport", "websocket", "url", url)
+	slog.Info("codex app-server rpc connected", "backend", backend, "transport", "websocket", "url", url)
 	s.wg.Add(1)
 	go s.readLoopWebSocket(conn)
 	return nil
@@ -419,6 +476,9 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
+	}
+	if effort := s.GetReasoningEffort(); effort != "" {
+		params["effort"] = effort
 	}
 	if approval, sandbox := appServerModeSettings(s.mode); approval != "" {
 		params["approvalPolicy"] = approval

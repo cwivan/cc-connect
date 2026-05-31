@@ -112,10 +112,10 @@ func New(opts map[string]any) (core.Agent, error) {
 
 func normalizeBackend(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "app", "codex-app", "desktop-app", "desktop_app", "desktop":
-		return "desktop_app"
-	case "app-server", "app_server", "appserver", "ws":
+	case "app", "codex-app", "app-server", "app_server", "appserver", "ws":
 		return "app_server"
+	case "desktop-app", "desktop_app", "desktop":
+		return "desktop_app"
 	default:
 		return "exec"
 	}
@@ -124,7 +124,7 @@ func normalizeBackend(raw string) string {
 func normalizeAppServerURL(raw string) string {
 	url := strings.TrimSpace(raw)
 	if url == "" {
-		return "ws://127.0.0.1:3845"
+		return "stdio://"
 	}
 	if strings.EqualFold(url, "stdio") {
 		return "stdio://"
@@ -448,8 +448,15 @@ func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, erro
 	codexHome := a.codexHome
 	workDir := a.workDir
 	backend := a.backend
+	appServerURL := a.appServerURL
 	desktopAppURL := a.desktopAppURL
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.providerEnvLocked()...)
+	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
+	if backend == "app_server" {
+		return listManagedAppServerThreads(ctx, appServerURL, workDir, codexHome, extraEnv)
+	}
 	if backend == "desktop_app" {
 		return listDesktopAppThreads(ctx, desktopAppURL, workDir, codexHome)
 	}
@@ -460,8 +467,15 @@ func (a *Agent) GetSessionHistory(ctx context.Context, sessionID string, limit i
 	a.mu.RLock()
 	codexHome := a.codexHome
 	backend := a.backend
+	appServerURL := a.appServerURL
 	desktopAppURL := a.desktopAppURL
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.providerEnvLocked()...)
+	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
+	if backend == "app_server" {
+		return getManagedAppServerThreadHistory(ctx, appServerURL, codexHome, sessionID, limit, extraEnv)
+	}
 	if backend == "desktop_app" {
 		return getDesktopAppThreadHistory(ctx, desktopAppURL, codexHome, sessionID, limit)
 	}
@@ -474,9 +488,13 @@ func (a *Agent) CreateSession(ctx context.Context, name string) (core.AgentSessi
 	model := a.model
 	reasoningEffort := a.reasoningEffort
 	backend := a.backend
+	appServerURL := a.appServerURL
 	desktopAppURL := a.desktopAppURL
 	codexHome := a.codexHome
 	workDir := a.workDir
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.providerEnvLocked()...)
+	extraEnv = append(extraEnv, a.sessionEnv...)
 	var baseURL string
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
 		if m := a.providers[a.activeIdx].Model; m != "" {
@@ -487,7 +505,7 @@ func (a *Agent) CreateSession(ctx context.Context, name string) (core.AgentSessi
 	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
 	a.mu.Unlock()
 
-	if backend != "desktop_app" {
+	if backend != "app_server" && backend != "desktop_app" {
 		return core.AgentSessionInfo{}, core.ErrNotSupported
 	}
 	if provName != "" {
@@ -498,6 +516,9 @@ func (a *Agent) CreateSession(ctx context.Context, name string) (core.AgentSessi
 			slog.Warn("codex: failed to write auth.json", "provider", provName, "error", err)
 		}
 	}
+	if backend == "app_server" {
+		return createManagedAppServerThread(ctx, appServerURL, workDir, model, reasoningEffort, mode, baseURL, provName, codexHome, name, extraEnv)
+	}
 	return createDesktopAppThread(ctx, desktopAppURL, workDir, model, reasoningEffort, mode, baseURL, provName, codexHome, name)
 }
 
@@ -505,8 +526,15 @@ func (a *Agent) DeleteSession(ctx context.Context, sessionID string) error {
 	a.mu.RLock()
 	codexHome := a.codexHome
 	backend := a.backend
+	appServerURL := a.appServerURL
 	desktopAppURL := a.desktopAppURL
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.providerEnvLocked()...)
+	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
+	if backend == "app_server" {
+		return archiveManagedAppServerThread(ctx, appServerURL, codexHome, sessionID, extraEnv)
+	}
 	if backend == "desktop_app" {
 		return archiveDesktopAppThread(ctx, desktopAppURL, codexHome, sessionID)
 	}

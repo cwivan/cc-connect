@@ -38,8 +38,30 @@ type appServerTurn struct {
 	Items       []map[string]any `json:"items"`
 }
 
+type appServerThreadClientFactory func(context.Context) (appServerRPC, error)
+
+var newManagedAppServerThreadClient = func(ctx context.Context, url, codexHome string, extraEnv []string, cfg appServerRPCConfig) (appServerRPC, error) {
+	return newAppServerClientWithConfig(ctx, url, codexHome, extraEnv, cfg)
+}
+
+var newDesktopAppThreadClient = func(ctx context.Context, url, codexHome string) (appServerRPC, error) {
+	return newDesktopAppClient(ctx, url, codexHome)
+}
+
+func listManagedAppServerThreads(ctx context.Context, url, workDir, codexHome string, extraEnv []string) ([]core.AgentSessionInfo, error) {
+	return listAppServerThreadsWithFactory(ctx, "app_server", func(ctx context.Context) (appServerRPC, error) {
+		return newManagedAppServerThreadClient(ctx, url, codexHome, extraEnv, appServerRPCConfig{})
+	}, workDir, codexHome)
+}
+
 func listDesktopAppThreads(ctx context.Context, url, workDir, codexHome string) ([]core.AgentSessionInfo, error) {
-	client, err := newDesktopAppClient(ctx, url, codexHome)
+	return listAppServerThreadsWithFactory(ctx, "desktop_app", func(ctx context.Context) (appServerRPC, error) {
+		return newDesktopAppThreadClient(ctx, url, codexHome)
+	}, workDir, codexHome)
+}
+
+func listAppServerThreadsWithFactory(ctx context.Context, backend string, factory appServerThreadClientFactory, workDir, codexHome string) ([]core.AgentSessionInfo, error) {
+	client, err := factory(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +88,7 @@ func listDesktopAppThreads(ctx context.Context, url, workDir, codexHome string) 
 
 		var resp appServerThreadListResponse
 		if err := client.request("thread/list", params, &resp); err != nil {
-			return nil, fmt.Errorf("codex desktop_app thread/list: %w", err)
+			return nil, fmt.Errorf("codex %s thread/list: %w", backend, err)
 		}
 		all = append(all, resp.Data...)
 		if resp.NextCursor == nil || *resp.NextCursor == "" {
@@ -78,8 +100,20 @@ func listDesktopAppThreads(ctx context.Context, url, workDir, codexHome string) 
 	return mapAppThreadsToSessions(all, readPinnedThreadOrder(codexHome)), nil
 }
 
+func getManagedAppServerThreadHistory(ctx context.Context, url, codexHome, sessionID string, limit int, extraEnv []string) ([]core.HistoryEntry, error) {
+	return getAppServerThreadHistoryWithFactory(ctx, "app_server", func(ctx context.Context) (appServerRPC, error) {
+		return newManagedAppServerThreadClient(ctx, url, codexHome, extraEnv, appServerRPCConfig{})
+	}, sessionID, limit)
+}
+
 func getDesktopAppThreadHistory(ctx context.Context, url, codexHome, sessionID string, limit int) ([]core.HistoryEntry, error) {
-	client, err := newDesktopAppClient(ctx, url, codexHome)
+	return getAppServerThreadHistoryWithFactory(ctx, "desktop_app", func(ctx context.Context) (appServerRPC, error) {
+		return newDesktopAppThreadClient(ctx, url, codexHome)
+	}, sessionID, limit)
+}
+
+func getAppServerThreadHistoryWithFactory(ctx context.Context, backend string, factory appServerThreadClientFactory, sessionID string, limit int) ([]core.HistoryEntry, error) {
+	client, err := factory(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +124,7 @@ func getDesktopAppThreadHistory(ctx context.Context, url, codexHome, sessionID s
 		"threadId":     sessionID,
 		"includeTurns": true,
 	}, &resp); err != nil {
-		return nil, fmt.Errorf("codex desktop_app thread/read: %w", err)
+		return nil, fmt.Errorf("codex %s thread/read: %w", backend, err)
 	}
 
 	entries := appThreadHistory(resp.Thread)
@@ -100,34 +134,45 @@ func getDesktopAppThreadHistory(ctx context.Context, url, codexHome, sessionID s
 	return entries, nil
 }
 
+func createManagedAppServerThread(ctx context.Context, url, workDir, model, effort, mode, baseURL, modelProvider, codexHome, name string, extraEnv []string) (core.AgentSessionInfo, error) {
+	return createAppServerThreadWithFactory(ctx, "app_server", func(ctx context.Context) (appServerRPC, error) {
+		return newManagedAppServerThreadClient(ctx, url, codexHome, extraEnv, appServerRPCConfig{
+			workDir:       workDir,
+			model:         model,
+			effort:        effort,
+			baseURL:       baseURL,
+			modelProvider: modelProvider,
+		})
+	}, workDir, model, effort, mode, name)
+}
+
 func createDesktopAppThread(ctx context.Context, url, workDir, model, effort, mode, baseURL, modelProvider, codexHome, name string) (core.AgentSessionInfo, error) {
-	client, err := newDesktopAppClient(ctx, url, codexHome)
+	return createAppServerThreadWithFactory(ctx, "desktop_app", func(ctx context.Context) (appServerRPC, error) {
+		return newDesktopAppThreadClient(ctx, url, codexHome)
+	}, workDir, model, effort, mode, name)
+}
+
+func createAppServerThreadWithFactory(ctx context.Context, backend string, factory appServerThreadClientFactory, workDir, model, effort, mode, name string) (core.AgentSessionInfo, error) {
+	client, err := factory(ctx)
 	if err != nil {
 		return core.AgentSessionInfo{}, err
 	}
 	defer client.Close()
 
-	client.workDir = workDir
-	client.model = model
-	client.effort = effort
-	client.mode = mode
-	client.baseURL = baseURL
-	client.modelProvider = modelProvider
-
 	var resp threadStartResponse
-	if err := client.request("thread/start", client.threadRequestParams(), &resp); err != nil {
-		return core.AgentSessionInfo{}, fmt.Errorf("codex desktop_app thread/start: %w", err)
+	if err := client.request("thread/start", appServerThreadStartParams(workDir, model, effort, mode), &resp); err != nil {
+		return core.AgentSessionInfo{}, fmt.Errorf("codex %s thread/start: %w", backend, err)
 	}
 	threadID := strings.TrimSpace(resp.Thread.ID)
 	if threadID == "" {
-		return core.AgentSessionInfo{}, fmt.Errorf("codex desktop_app thread/start returned empty thread id")
+		return core.AgentSessionInfo{}, fmt.Errorf("codex %s thread/start returned empty thread id", backend)
 	}
 	if title := strings.TrimSpace(name); title != "" {
 		if err := client.request("thread/name/set", map[string]any{
 			"threadId": threadID,
 			"name":     title,
 		}, nil); err != nil {
-			return core.AgentSessionInfo{}, fmt.Errorf("codex desktop_app thread/name/set: %w", err)
+			return core.AgentSessionInfo{}, fmt.Errorf("codex %s thread/name/set: %w", backend, err)
 		}
 	}
 	return core.AgentSessionInfo{
@@ -137,16 +182,38 @@ func createDesktopAppThread(ctx context.Context, url, workDir, model, effort, mo
 	}, nil
 }
 
+func archiveManagedAppServerThread(ctx context.Context, url, codexHome, sessionID string, extraEnv []string) error {
+	return archiveAppServerThreadWithFactory(ctx, "app_server", func(ctx context.Context) (appServerRPC, error) {
+		return newManagedAppServerThreadClient(ctx, url, codexHome, extraEnv, appServerRPCConfig{})
+	}, sessionID)
+}
+
 func archiveDesktopAppThread(ctx context.Context, url, codexHome, sessionID string) error {
-	client, err := newDesktopAppClient(ctx, url, codexHome)
+	return archiveAppServerThreadWithFactory(ctx, "desktop_app", func(ctx context.Context) (appServerRPC, error) {
+		return newDesktopAppThreadClient(ctx, url, codexHome)
+	}, sessionID)
+}
+
+func archiveAppServerThreadWithFactory(ctx context.Context, backend string, factory appServerThreadClientFactory, sessionID string) error {
+	client, err := factory(ctx)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 	if err := client.request("thread/archive", map[string]any{"threadId": sessionID}, nil); err != nil {
-		return fmt.Errorf("codex desktop_app thread/archive: %w", err)
+		return fmt.Errorf("codex %s thread/archive: %w", backend, err)
 	}
 	return nil
+}
+
+func appServerThreadStartParams(workDir, model, effort, mode string) map[string]any {
+	session := &appServerSession{
+		workDir: workDir,
+		model:   model,
+		effort:  effort,
+		mode:    mode,
+	}
+	return session.threadRequestParams()
 }
 
 func mapAppThreadsToSessions(threads []appServerThread, pinned map[string]int) []core.AgentSessionInfo {

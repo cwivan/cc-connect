@@ -64,14 +64,22 @@ func TestNormalizeAppServerURL_StdIOIsExplicit(t *testing.T) {
 	}
 }
 
-func TestNormalizeAppServerURL_EmptyKeepsWebSocketDefault(t *testing.T) {
-	if got := normalizeAppServerURL(""); got != "ws://127.0.0.1:3845" {
-		t.Fatalf("normalizeAppServerURL(empty) = %q, want ws://127.0.0.1:3845", got)
+func TestNormalizeAppServerURL_EmptyUsesStdIODefault(t *testing.T) {
+	if got := normalizeAppServerURL(""); got != "stdio://" {
+		t.Fatalf("normalizeAppServerURL(empty) = %q, want stdio://", got)
 	}
 }
 
-func TestNormalizeBackend_AppAliasesUseDesktopApp(t *testing.T) {
-	for _, raw := range []string{"app", "codex-app", "desktop-app"} {
+func TestNormalizeBackend_AppAliasesUseAppServer(t *testing.T) {
+	for _, raw := range []string{"app", "codex-app"} {
+		if got := normalizeBackend(raw); got != "app_server" {
+			t.Fatalf("normalizeBackend(%q) = %q, want app_server", raw, got)
+		}
+	}
+}
+
+func TestNormalizeBackend_DesktopAliasesUseDesktopApp(t *testing.T) {
+	for _, raw := range []string{"desktop-app", "desktop_app", "desktop"} {
 		if got := normalizeBackend(raw); got != "desktop_app" {
 			t.Fatalf("normalizeBackend(%q) = %q, want desktop_app", raw, got)
 		}
