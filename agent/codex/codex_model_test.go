@@ -70,11 +70,32 @@ func TestNormalizeAppServerURL_EmptyKeepsWebSocketDefault(t *testing.T) {
 	}
 }
 
-func TestNormalizeBackend_AppAliasesUseAppServer(t *testing.T) {
+func TestNormalizeBackend_AppAliasesUseDesktopApp(t *testing.T) {
 	for _, raw := range []string{"app", "codex-app", "desktop-app"} {
-		if got := normalizeBackend(raw); got != "app_server" {
-			t.Fatalf("normalizeBackend(%q) = %q, want app_server", raw, got)
+		if got := normalizeBackend(raw); got != "desktop_app" {
+			t.Fatalf("normalizeBackend(%q) = %q, want desktop_app", raw, got)
 		}
+	}
+}
+
+func TestDesktopAppURLRequiresWebSocketTransport(t *testing.T) {
+	if got := normalizeDesktopAppURL(""); got != "ws://127.0.0.1:3845" {
+		t.Fatalf("normalizeDesktopAppURL(empty) = %q, want default ws URL", got)
+	}
+	if got := normalizeDesktopAppURL("stdio"); got != "stdio://" {
+		t.Fatalf("normalizeDesktopAppURL(stdio) = %q, want stdio://", got)
+	}
+	if isWebSocketURL(normalizeDesktopAppURL("stdio")) {
+		t.Fatal("stdio desktop_app URL should not be treated as a reachable Desktop App websocket")
+	}
+}
+
+func TestDesktopAppURLFallbackIgnoresStdIOAppServer(t *testing.T) {
+	if got := desktopAppURLFallback("stdio://"); got != "" {
+		t.Fatalf("desktopAppURLFallback(stdio://) = %q, want empty", got)
+	}
+	if got := desktopAppURLFallback("ws://127.0.0.1:4444"); got != "ws://127.0.0.1:4444" {
+		t.Fatalf("desktopAppURLFallback(ws) = %q", got)
 	}
 }
 
@@ -87,5 +108,20 @@ func TestWorkspaceAgentOptions_PreservesStdIOAppServerURL(t *testing.T) {
 	opts := a.WorkspaceAgentOptions()
 	if got := opts["app_server_url"]; got != "stdio://" {
 		t.Fatalf("WorkspaceAgentOptions()[app_server_url] = %#v, want stdio://", got)
+	}
+}
+
+func TestWorkspaceAgentOptions_IncludesDesktopAppURL(t *testing.T) {
+	a := &Agent{
+		backend:       "desktop_app",
+		desktopAppURL: "ws://127.0.0.1:3845",
+	}
+
+	opts := a.WorkspaceAgentOptions()
+	if got := opts["backend"]; got != "desktop_app" {
+		t.Fatalf("WorkspaceAgentOptions()[backend] = %#v, want desktop_app", got)
+	}
+	if got := opts["desktop_app_url"]; got != "ws://127.0.0.1:3845" {
+		t.Fatalf("WorkspaceAgentOptions()[desktop_app_url] = %#v", got)
 	}
 }

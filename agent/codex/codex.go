@@ -32,8 +32,9 @@ type Agent struct {
 	model           string
 	reasoningEffort string
 	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
-	backend         string // "exec" | "app_server"
+	backend         string // "exec" | "app_server" | "desktop_app"
 	appServerURL    string
+	desktopAppURL   string
 	codexHome       string
 	cliBin          string   // CLI binary name, default "codex"
 	cliExtraArgs    []string // extra args parsed from cli_path after the binary
@@ -54,10 +55,12 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode, _ := opts["mode"].(string)
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
+	desktopAppURL, _ := opts["desktop_app_url"].(string)
 	codexHome, _ := opts["codex_home"].(string)
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 	appServerURL = normalizeAppServerURL(appServerURL)
+	desktopAppURL = normalizeDesktopAppURL(firstNonEmpty(desktopAppURL, desktopAppURLFallback(appServerURL)))
 
 	// cli_path allows overriding the binary, e.g. "omx" or "omx --flag val"
 	cliBin := "codex"
@@ -98,6 +101,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		mode:            mode,
 		backend:         backend,
 		appServerURL:    appServerURL,
+		desktopAppURL:   desktopAppURL,
 		codexHome:       strings.TrimSpace(codexHome),
 		cliBin:          cliBin,
 		cliExtraArgs:    cliExtraArgs,
@@ -108,7 +112,9 @@ func New(opts map[string]any) (core.Agent, error) {
 
 func normalizeBackend(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "app", "codex-app", "desktop-app", "app-server", "app_server", "appserver", "ws":
+	case "app", "codex-app", "desktop-app", "desktop_app", "desktop":
+		return "desktop_app"
+	case "app-server", "app_server", "appserver", "ws":
 		return "app_server"
 	default:
 		return "exec"
@@ -124,6 +130,38 @@ func normalizeAppServerURL(raw string) string {
 		return "stdio://"
 	}
 	return url
+}
+
+func normalizeDesktopAppURL(raw string) string {
+	url := strings.TrimSpace(raw)
+	if url == "" {
+		return "ws://127.0.0.1:3845"
+	}
+	if strings.EqualFold(url, "stdio") {
+		return "stdio://"
+	}
+	return url
+}
+
+func desktopAppURLFallback(appServerURL string) string {
+	if strings.EqualFold(strings.TrimSpace(appServerURL), "stdio://") {
+		return ""
+	}
+	return strings.TrimSpace(appServerURL)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func isWebSocketURL(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(lower, "ws://") || strings.HasPrefix(lower, "wss://")
 }
 
 func normalizeMode(raw string) string {
@@ -361,6 +399,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	reasoningEffort := a.reasoningEffort
 	backend := a.backend
 	appServerURL := a.appServerURL
+	desktopAppURL := a.desktopAppURL
 	codexHome := a.codexHome
 	cliBin := a.cliBin
 	cliExtraArgs := a.cliExtraArgs
@@ -394,6 +433,9 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	if backend == "app_server" {
 		return newAppServerSession(ctx, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome)
 	}
+	if backend == "desktop_app" {
+		return newDesktopAppSession(ctx, desktopAppURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome)
+	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
 	}
@@ -401,25 +443,73 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
 }
 
-func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
+func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
 	a.mu.RLock()
 	codexHome := a.codexHome
 	workDir := a.workDir
+	backend := a.backend
+	desktopAppURL := a.desktopAppURL
 	a.mu.RUnlock()
+	if backend == "desktop_app" {
+		return listDesktopAppThreads(ctx, desktopAppURL, workDir, codexHome)
+	}
 	return listCodexSessions(workDir, codexHome)
 }
 
-func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
+func (a *Agent) GetSessionHistory(ctx context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
 	a.mu.RLock()
 	codexHome := a.codexHome
+	backend := a.backend
+	desktopAppURL := a.desktopAppURL
 	a.mu.RUnlock()
+	if backend == "desktop_app" {
+		return getDesktopAppThreadHistory(ctx, desktopAppURL, codexHome, sessionID, limit)
+	}
 	return getSessionHistory(sessionID, codexHome, limit)
 }
 
-func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
+func (a *Agent) CreateSession(ctx context.Context, name string) (core.AgentSessionInfo, error) {
+	a.mu.Lock()
+	mode := a.mode
+	model := a.model
+	reasoningEffort := a.reasoningEffort
+	backend := a.backend
+	desktopAppURL := a.desktopAppURL
+	codexHome := a.codexHome
+	workDir := a.workDir
+	var baseURL string
+	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
+		if m := a.providers[a.activeIdx].Model; m != "" {
+			model = m
+		}
+		baseURL = a.providers[a.activeIdx].BaseURL
+	}
+	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
+	a.mu.Unlock()
+
+	if backend != "desktop_app" {
+		return core.AgentSessionInfo{}, core.ErrNotSupported
+	}
+	if provName != "" {
+		if err := ensureCodexProviderConfig(codexHome, provName, baseURL, provWireAPI, provHeaders); err != nil {
+			slog.Warn("codex: failed to write provider config", "provider", provName, "error", err)
+		}
+		if err := ensureCodexAuth(codexHome, provAPIKey); err != nil {
+			slog.Warn("codex: failed to write auth.json", "provider", provName, "error", err)
+		}
+	}
+	return createDesktopAppThread(ctx, desktopAppURL, workDir, model, reasoningEffort, mode, baseURL, provName, codexHome, name)
+}
+
+func (a *Agent) DeleteSession(ctx context.Context, sessionID string) error {
 	a.mu.RLock()
 	codexHome := a.codexHome
+	backend := a.backend
+	desktopAppURL := a.desktopAppURL
 	a.mu.RUnlock()
+	if backend == "desktop_app" {
+		return archiveDesktopAppThread(ctx, desktopAppURL, codexHome, sessionID)
+	}
 	path := findSessionFile(sessionID, codexHome)
 	if path == "" {
 		return fmt.Errorf("session file not found: %s", sessionID)
@@ -459,6 +549,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	}
 	if a.appServerURL != "" {
 		opts["app_server_url"] = a.appServerURL
+	}
+	if a.desktopAppURL != "" {
+		opts["desktop_app_url"] = a.desktopAppURL
 	}
 	if a.codexHome != "" {
 		opts["codex_home"] = a.codexHome

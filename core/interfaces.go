@@ -282,6 +282,13 @@ type Agent interface {
 	Stop() error
 }
 
+// AgentSessionCreator is an optional capability for agents that can create a
+// backend conversation before the first user prompt. Agents that cannot create
+// eagerly should return ErrNotSupported so the engine can keep lazy behavior.
+type AgentSessionCreator interface {
+	CreateSession(ctx context.Context, name string) (AgentSessionInfo, error)
+}
+
 // AgentSession represents a running interactive agent session with a persistent process.
 type AgentSession interface {
 	// Send sends a user message (with optional images and files) to the running agent process.

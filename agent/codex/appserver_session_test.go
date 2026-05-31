@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -163,6 +164,87 @@ func TestAppServerSession_CompleteTurnPatchesSessionSource(t *testing.T) {
 	}
 	if !strings.Contains(line, `"originator":"Codex Desktop"`) {
 		t.Fatalf("session originator was not patched: %s", line)
+	}
+}
+
+func TestMapAppThreads_PrefersNameAndPinnedOrder(t *testing.T) {
+	base := time.Unix(1000, 0)
+	threads := []appServerThread{
+		{
+			ID:        "thread-new",
+			Name:      "",
+			Preview:   "latest user message",
+			Cwd:       "/tmp/project",
+			UpdatedAt: base.Add(2 * time.Hour).Unix(),
+		},
+		{
+			ID:        "thread-pinned",
+			Name:      "Pinned renamed title",
+			Preview:   "old preview",
+			Cwd:       "/tmp/project",
+			UpdatedAt: base.Unix(),
+		},
+	}
+
+	got := mapAppThreadsToSessions(threads, map[string]int{"thread-pinned": 0})
+
+	if len(got) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(got))
+	}
+	if got[0].ID != "thread-pinned" {
+		t.Fatalf("first session id = %q, want pinned thread first", got[0].ID)
+	}
+	if got[0].Summary != "Pinned renamed title" {
+		t.Fatalf("pinned summary = %q, want App name", got[0].Summary)
+	}
+	if got[1].Summary != "latest user message" {
+		t.Fatalf("fallback summary = %q, want preview", got[1].Summary)
+	}
+}
+
+func TestAppServerReasoningText_UsesSummaryOnly(t *testing.T) {
+	got := appServerReasoningText(map[string]any{
+		"summary": []any{"public summary"},
+		"content": []any{"private chain of thought"},
+	})
+	if got != "public summary" {
+		t.Fatalf("reasoning text = %q, want public summary", got)
+	}
+
+	got = appServerReasoningText(map[string]any{
+		"content": []any{"private chain of thought"},
+	})
+	if got != "" {
+		t.Fatalf("reasoning text without summary = %q, want empty", got)
+	}
+}
+
+func TestAppThreadHistory_MapsUserAndAssistantMessages(t *testing.T) {
+	startedAt := int64(1700000000)
+	history := appThreadHistory(appServerThread{
+		Turns: []appServerTurn{{
+			StartedAt: &startedAt,
+			Items: []map[string]any{
+				{
+					"type": "userMessage",
+					"content": []any{
+						map[string]any{"type": "text", "text": "hello from phone"},
+					},
+				},
+				{"type": "reasoning", "summary": []any{"public summary"}},
+				{"type": "agentMessage", "text": "hello from Codex App"},
+			},
+		}},
+	})
+
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2: %#v", len(history), history)
+	}
+	if history[0].Role != "user" || history[0].Content != "hello from phone" {
+		t.Fatalf("first history entry = %#v", history[0])
+	}
+	if history[1].Role != "assistant" || history[1].Content != "hello from Codex App" {
+		t.Fatalf("second history entry = %#v", history[1])
 	}
 }
 

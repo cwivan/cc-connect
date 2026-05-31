@@ -32,11 +32,14 @@ func TestBuildWindowsTaskScript(t *testing.T) {
 
 	script := buildWindowsTaskScript(cfg)
 	for _, want := range []string{
+		`param([int]$RestartFromPid = 0)`,
 		`$env:CC_LOG_FILE = 'C:\Users\me\.cc-connect\logs\cc-connect.log'`,
 		`$env:CC_LOG_MAX_SIZE = '10485760'`,
+		`$env:CC_CONNECT_RESTART_SCRIPT = ` + powerShellLiteral(windowsTaskScriptPath()),
 		`$env:PATH = 'C:\Program Files\nodejs;C:\Users\me\AppData\Local\Programs'`,
 		`$env:HTTPS_PROXY = 'http://127.0.0.1:7890'`,
 		`$env:http_proxy = 'http://127.0.0.1:7890'`,
+		`while (Get-Process -Id $RestartFromPid -ErrorAction SilentlyContinue)`,
 		`Set-Location -LiteralPath 'C:\Users\me\.cc-connect'`,
 		`while ($true) {`,
 		`& 'C:\Program Files\cc-connect\cc-connect.exe'`,

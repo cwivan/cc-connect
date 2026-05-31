@@ -1339,12 +1339,16 @@ app_secret = "your-feishu-app-secret"
 # Requires: npm install -g @openai/codex
 # 需要安装：npm install -g @openai/codex
 # Codex backend is configurable. The default "exec" backend uses
-# `codex exec --json`; "app_server" uses the Codex app-server protocol so
-# sessions are written in the App-compatible format.
-# backend = "exec"       # default
-# backend = "app_server" # recommended when you want Codex App visibility; "app" is also accepted
-# app_server_url = "stdio" # optional; use stdio transport for app-server
-# Codex 可选择 exec 或 app_server 后端；需要 Codex App 可见性时推荐 app_server。
+# `codex exec --json`; "app_server" starts a managed/headless Codex app-server;
+# "desktop_app" connects to a real Codex Desktop App endpoint and fails fast if
+# that endpoint is unavailable. Aliases "app", "codex-app", and "desktop-app"
+# map to "desktop_app".
+# backend = "exec"        # default
+# backend = "app_server"  # managed/headless; does not guarantee Desktop App live refresh
+# backend = "desktop_app" # real Desktop App thread list/read/new/turn flow
+# app_server_url = "stdio" # optional for app_server; use stdio transport
+# desktop_app_url = "ws://127.0.0.1:3845" # required reachable WebSocket for desktop_app
+# Codex 可选择 exec / app_server / desktop_app；需要真实 Codex App 可见时使用 desktop_app。
 
 # [[projects]]
 # name = "my-codex-project"
@@ -1355,8 +1359,8 @@ app_secret = "your-feishu-app-secret"
 # [projects.agent.options]
 # work_dir = "/path/to/project"
 # mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
-# backend = "app_server" # "exec" | "app_server" | "app"
-# app_server_url = "stdio"
+# backend = "desktop_app" # "exec" | "app_server" | "desktop_app" | "app"
+# desktop_app_url = "ws://127.0.0.1:3845"
 #
 # Mode options / 模式说明:
 # - "suggest":   ask permission for every tool call (default, safest) / 每次调用都需确认（默认，最安全）

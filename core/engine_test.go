@@ -4337,7 +4337,8 @@ func TestHandleMessage_MultiWorkspaceDirOverrideUsesStableInteractiveKey(t *test
 	overrideDir = normalizeWorkspacePath(overrideDir)
 
 	p := &stubPlatformEngine{n: "discord"}
-	e := NewEngine("test", &namedStubWorkDirAgent{name: agentName}, []Platform{p}, "", LangEnglish)
+	e := NewEngine("test", &namedStubWorkDirAgent{name: agentName}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	defer e.cancel()
 	e.SetMultiWorkspace(baseDir, filepath.Join(t.TempDir(), "bindings.json"))
 
 	channelID := "C-stable"
@@ -4379,6 +4380,7 @@ func TestHandleMessage_MultiWorkspaceDirOverrideUsesStableInteractiveKey(t *test
 	e.handleMessage(p, msg)
 
 	deadline := time.After(2 * time.Second)
+	foundStableState := false
 	for {
 		e.interactiveMu.Lock()
 		stateAtStable := e.interactiveStates[stableKey]
@@ -4388,11 +4390,30 @@ func TestHandleMessage_MultiWorkspaceDirOverrideUsesStableInteractiveKey(t *test
 			if stateAtOverride != nil {
 				t.Fatalf("unexpected override-key state for %q", overrideDir+":"+msg.SessionKey)
 			}
-			return
+			foundStableState = true
+			break
 		}
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for stable interactive state; sent=%v", p.getSent())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !foundStableState {
+		t.Fatal("expected stable interactive state")
+	}
+
+	replyDeadline := time.After(2 * time.Second)
+	for {
+		for _, sent := range p.getSent() {
+			if strings.Contains(sent, "ok") {
+				return
+			}
+		}
+		select {
+		case <-replyDeadline:
+			t.Fatalf("timed out waiting for agent reply; sent=%v", p.getSent())
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -8701,6 +8722,67 @@ func TestExecuteCardAction_NewCleansUpAndCreatesSession(t *testing.T) {
 	}
 }
 
+type sessionCreatingAgent struct {
+	stubAgent
+	createdName string
+	createErr   error
+}
+
+func (a *sessionCreatingAgent) Name() string { return "codex" }
+
+func (a *sessionCreatingAgent) CreateSession(_ context.Context, name string) (AgentSessionInfo, error) {
+	a.createdName = name
+	if a.createErr != nil {
+		return AgentSessionInfo{}, a.createErr
+	}
+	return AgentSessionInfo{ID: "app-thread-1", Summary: name}, nil
+}
+
+func TestCmdNew_UsesAgentSessionCreator(t *testing.T) {
+	agent := &sessionCreatingAgent{}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	key := "test:user1"
+
+	old := e.sessions.GetOrCreateActive(key)
+	old.SetAgentSessionID("old-thread", "codex")
+
+	e.cmdNew(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"App title"})
+
+	if agent.createdName != "App title" {
+		t.Fatalf("CreateSession name = %q, want App title", agent.createdName)
+	}
+	active := e.sessions.GetOrCreateActive(key)
+	if got := active.GetAgentSessionID(); got != "app-thread-1" {
+		t.Fatalf("active AgentSessionID = %q, want app-thread-1", got)
+	}
+	if got := e.sessions.GetSessionName("app-thread-1"); got != "App title" {
+		t.Fatalf("session name = %q, want App title", got)
+	}
+}
+
+func TestHandleCardNav_NewUsesAgentSessionCreator(t *testing.T) {
+	agent := &sessionCreatingAgent{}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	key := "test:user1"
+
+	card := e.handleCardNav("act:/new Card title", key)
+	if card == nil {
+		t.Fatal("expected current session card")
+	}
+	if agent.createdName != "Card title" {
+		t.Fatalf("CreateSession name = %q, want Card title", agent.createdName)
+	}
+	active := e.sessions.GetOrCreateActive(key)
+	if got := active.GetAgentSessionID(); got != "app-thread-1" {
+		t.Fatalf("active AgentSessionID = %q, want app-thread-1", got)
+	}
+	if !strings.Contains(card.RenderText(), "app-thread-1") {
+		t.Fatalf("card text = %q, want created thread id", card.RenderText())
+	}
+}
+
 func TestExecuteCardAction_LangSwitch(t *testing.T) {
 	e := newTestEngine()
 
@@ -9004,6 +9086,52 @@ func TestEventIdleTimeout_CleansUpSession(t *testing.T) {
 	}
 }
 
+func TestProcessInteractiveEvents_SendsSlowFirstEventNotice(t *testing.T) {
+	oldSlowAgentFirstEvent := slowAgentFirstEvent
+	slowAgentFirstEvent = 20 * time.Millisecond
+	t.Cleanup(func() { slowAgentFirstEvent = oldSlowAgentFirstEvent })
+
+	p := &stubPlatformEngine{n: "test"}
+	sess := newControllableSession("slow-first-event")
+	e := NewEngine("test", &controllableAgent{nextSession: sess}, []Platform{p}, "", LangEnglish)
+
+	key := "test:slow-first-event"
+	state := &interactiveState{
+		agentSession: sess,
+		platform:     p,
+		replyCtx:     "ctx",
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	session := e.sessions.GetOrCreateActive(key)
+	done := make(chan struct{})
+	go func() {
+		e.processInteractiveEvents(state, session, e.sessions, key, "", time.Now(), nil, nil, nil)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		for _, sent := range p.getSent() {
+			if strings.Contains(sent, "waiting for the first event") {
+				sess.events <- Event{Type: EventResult, Content: "done", Done: true}
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("processInteractiveEvents did not complete after result")
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected slow first event notice, got %v", p.getSent())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestEventIdleTimeout_ResetOnEvent(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	sess := newControllableSession("idle-reset")
@@ -9207,14 +9335,13 @@ func TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		sent := p.getSent()
-		if len(sent) > 0 {
-			if !strings.Contains(sent[0], normalizedWsDir) {
-				t.Fatalf("expected shell output to contain shared workspace %q, got %q", normalizedWsDir, sent[0])
+		for _, output := range sent {
+			if strings.Contains(output, normalizedWsDir) {
+				return
 			}
-			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output containing shared workspace %q, got %v", normalizedWsDir, sent)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -9248,11 +9375,9 @@ func TestCmdShell_MultiWorkspaceIgnoresMissingSharedBinding(t *testing.T) {
 	missingResolved := normalizeWorkspacePath(missingDir)
 	for {
 		sent := p.getSent()
-		if len(sent) > 0 {
-			// With streaming progress, the final result is the last sent message
-			output := sent[len(sent)-1]
+		for _, output := range sent {
 			if !strings.Contains(output, agent.workDir) && !strings.Contains(output, expectedResolved) {
-				t.Fatalf("expected shell output to fall back to agent work dir %q (resolved %q), got %q", agent.workDir, expectedResolved, output)
+				continue
 			}
 			if strings.Contains(output, missingDir) || strings.Contains(output, missingResolved) {
 				t.Fatalf("expected shell output to ignore missing shared workspace %q, got %q", missingDir, output)
@@ -9260,7 +9385,7 @@ func TestCmdShell_MultiWorkspaceIgnoresMissingSharedBinding(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output to fall back to agent work dir %q (resolved %q), got %v", agent.workDir, expectedResolved, sent)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

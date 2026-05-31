@@ -37,12 +37,15 @@ const (
 // Slow-operation thresholds. Operations exceeding these durations produce a
 // slog.Warn so operators can quickly pinpoint bottlenecks.
 const (
-	slowPlatformSend    = 2 * time.Second  // platform Reply / Send
-	slowAgentStart      = 5 * time.Second  // agent.StartSession
-	slowAgentClose      = 3 * time.Second  // agentSession.Close
-	slowAgentSend       = 2 * time.Second  // agentSession.Send
-	slowAgentFirstEvent = 15 * time.Second // time from send to first agent event
+	slowPlatformSend = 2 * time.Second // platform Reply / Send
+	slowAgentStart   = 5 * time.Second // agent.StartSession
+	slowAgentClose   = 3 * time.Second // agentSession.Close
+	slowAgentSend    = 2 * time.Second // agentSession.Send
 )
+
+// slowAgentFirstEvent is a package variable so tests can shorten the threshold
+// without waiting for the production 15-second timeout.
+var slowAgentFirstEvent = 15 * time.Second // time from send to first agent event
 
 const (
 	replyFooterUsageTimeout  = 1500 * time.Millisecond
@@ -3567,6 +3570,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		turnDeadlineCh = turnDeadlineTimer.C
 	}
 
+	var slowFirstEventTimer *time.Timer
+	var slowFirstEventCh <-chan time.Time
+	if slowAgentFirstEvent > 0 {
+		slowFirstEventTimer = time.NewTimer(slowAgentFirstEvent)
+		defer slowFirstEventTimer.Stop()
+		slowFirstEventCh = slowFirstEventTimer.C
+	}
+
 	events := state.agentSession.Events()
 	stopCh := state.stopSignal()
 	for {
@@ -3600,6 +3611,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
 				return
 			}
+			continue
+		case <-slowFirstEventCh:
+			slowFirstEventCh = nil
+			slog.Warn("agent first event still pending",
+				"session_key", sessionKey, "threshold", slowAgentFirstEvent, "elapsed", time.Since(waitStart))
+			state.mu.Lock()
+			p := state.platform
+			state.mu.Unlock()
+			e.send(p, replyCtx, e.i18n.T(MsgWaitingForFirstEvent))
 			continue
 		case <-idleCh:
 			slog.Error("agent session idle timeout: no events for too long, killing session",
@@ -3689,6 +3709,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		if !firstEventLogged {
 			firstEventLogged = true
+			if slowFirstEventTimer != nil {
+				if !slowFirstEventTimer.Stop() {
+					select {
+					case <-slowFirstEventTimer.C:
+					default:
+					}
+				}
+				slowFirstEventCh = nil
+			}
 			if elapsed := time.Since(waitStart); elapsed >= slowAgentFirstEvent {
 				slog.Warn("slow agent first event", "elapsed", elapsed, "session", sessionKey, "event_type", event.Type)
 			}
@@ -5277,32 +5306,67 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 }
 
 func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
-	_, sessions, interactiveKey, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
-	slog.Info("cmdNew: cleaning up old session", "session_key", msg.SessionKey)
-	e.cleanupInteractiveState(interactiveKey)
-	slog.Info("cmdNew: cleanup done, creating new session", "session_key", msg.SessionKey)
-
-	// Clear old session's agent session ID so it cannot be resumed
-	old := sessions.GetOrCreateActive(msg.SessionKey)
-	old.SetAgentSessionID("", "")
-	old.ClearHistory()
-	sessions.Save()
-
 	name := ""
 	if len(args) > 0 {
 		name = strings.Join(args, " ")
 	}
-	sessions.NewSession(msg.SessionKey, name)
+	if _, err := e.createFreshSession(agent, sessions, msg.SessionKey, interactiveKey, name); err != nil {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+		return
+	}
 	if name != "" {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgNewSessionCreatedName), name))
 	} else {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgNewSessionCreated))
 	}
+}
+
+func (e *Engine) createFreshSession(agent Agent, sessions *SessionManager, sessionKey, interactiveKey, name string) (*Session, error) {
+	if creator, ok := agent.(AgentSessionCreator); ok {
+		info, err := creator.CreateSession(e.ctx, name)
+		if err != nil && !errors.Is(err, ErrNotSupported) {
+			return nil, err
+		}
+		if err == nil {
+			if strings.TrimSpace(info.ID) == "" {
+				return nil, fmt.Errorf("agent created session with empty id")
+			}
+			slog.Info("cmdNew: cleaning up old session", "session_key", sessionKey)
+			e.cleanupInteractiveState(interactiveKey)
+			slog.Info("cmdNew: cleanup done, creating new session", "session_key", sessionKey)
+
+			old := sessions.GetOrCreateActive(sessionKey)
+			old.SetAgentSessionID("", "")
+			old.ClearHistory()
+			newSession := sessions.NewSession(sessionKey, name)
+			newSession.SetAgentSessionID(info.ID, agent.Name())
+			if name != "" {
+				sessions.SetSessionName(info.ID, name)
+			} else if strings.TrimSpace(info.Summary) != "" {
+				sessions.SetSessionName(info.ID, strings.TrimSpace(info.Summary))
+			}
+			sessions.Save()
+			return newSession, nil
+		}
+	}
+
+	slog.Info("cmdNew: cleaning up old session", "session_key", sessionKey)
+	e.cleanupInteractiveState(interactiveKey)
+	slog.Info("cmdNew: cleanup done, creating new session", "session_key", sessionKey)
+
+	// Clear old session's agent session ID so it cannot be resumed
+	old := sessions.GetOrCreateActive(sessionKey)
+	old.SetAgentSessionID("", "")
+	old.ClearHistory()
+	sessions.Save()
+
+	return sessions.NewSession(sessionKey, name), nil
 }
 
 // applySessionFilter conditionally filters agent sessions based on the
@@ -9507,6 +9571,9 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	if prefix == "act" && cmd == "/model" {
 		return e.handleModelCardAction(args, sessionKey)
 	}
+	if prefix == "act" && cmd == "/new" {
+		return e.handleNewCardAction(args, sessionKey)
+	}
 
 	if prefix == "act" {
 		e.executeCardAction(cmd, args, sessionKey)
@@ -9589,6 +9656,15 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderUpgradeCard()
 	}
 	return nil
+}
+
+func (e *Engine) handleNewCardAction(args, sessionKey string) *Card {
+	agent, sessions := e.sessionContextForKey(sessionKey)
+	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+	if _, err := e.createFreshSession(agent, sessions, sessionKey, interactiveKey, strings.TrimSpace(args)); err != nil {
+		return e.simpleCard(e.i18n.T(MsgCardTitleCurrentSession), "red", e.i18n.Tf(MsgError, err))
+	}
+	return e.renderCurrentCard(sessionKey)
 }
 
 func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
@@ -9799,9 +9875,10 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 
 	case "/new":
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
-		_, sessions := e.sessionContextForKey(sessionKey)
-		e.cleanupInteractiveState(interactiveKey)
-		sessions.NewSession(sessionKey, "")
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if _, err := e.createFreshSession(agent, sessions, sessionKey, interactiveKey, ""); err != nil {
+			slog.Error("card /new failed", "session_key", sessionKey, "error", err)
+		}
 
 	case "/delete-mode":
 		e.executeDeleteModeAction(sessionKey, args)

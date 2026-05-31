@@ -168,10 +168,16 @@ exit 1
 }
 
 func buildWindowsTaskScript(cfg Config) string {
+	return buildWindowsTaskScriptAt(cfg, windowsTaskScriptPath())
+}
+
+func buildWindowsTaskScriptAt(cfg Config, scriptPath string) string {
 	var sb strings.Builder
+	sb.WriteString("param([int]$RestartFromPid = 0)\r\n")
 	sb.WriteString("$ErrorActionPreference = 'Stop'\r\n")
 	writePowerShellEnv(&sb, "CC_LOG_FILE", cfg.LogFile)
 	writePowerShellEnv(&sb, "CC_LOG_MAX_SIZE", strconv.FormatInt(cfg.LogMaxSize, 10))
+	writePowerShellEnv(&sb, "CC_CONNECT_RESTART_SCRIPT", scriptPath)
 	if cfg.EnvPATH != "" {
 		writePowerShellEnv(&sb, "PATH", cfg.EnvPATH)
 	}
@@ -185,6 +191,11 @@ func buildWindowsTaskScript(cfg Config) string {
 			writePowerShellEnv(&sb, key, cfg.EnvExtra[key])
 		}
 	}
+	sb.WriteString("if ($RestartFromPid -gt 0) {\r\n")
+	sb.WriteString("  while (Get-Process -Id $RestartFromPid -ErrorAction SilentlyContinue) {\r\n")
+	sb.WriteString("    Start-Sleep -Milliseconds 200\r\n")
+	sb.WriteString("  }\r\n")
+	sb.WriteString("}\r\n")
 	fmt.Fprintf(&sb, "Set-Location -LiteralPath %s\r\n", powerShellLiteral(cfg.WorkDir))
 	sb.WriteString("while ($true) {\r\n")
 	fmt.Fprintf(&sb, "  & %s\r\n", powerShellLiteral(cfg.BinaryPath))

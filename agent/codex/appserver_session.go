@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/gorilla/websocket"
 )
 
 type rpcResponseEnvelope struct {
@@ -129,6 +130,7 @@ type appServerSession struct {
 
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
+	ws      *websocket.Conn
 	procMu  sync.Mutex
 	writeMu sync.Mutex
 
@@ -201,6 +203,67 @@ func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode,
 	return s, nil
 }
 
+func newDesktopAppSession(ctx context.Context, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string) (*appServerSession, error) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	s := &appServerSession{
+		url:              normalizeDesktopAppURL(url),
+		workDir:          workDir,
+		model:            model,
+		effort:           effort,
+		mode:             mode,
+		baseURL:          baseURL,
+		modelProvider:    modelProvider,
+		extraEnv:         append([]string(nil), extraEnv...),
+		codexHome:        strings.TrimSpace(codexHome),
+		events:           make(chan core.Event, 128),
+		ctx:              sessionCtx,
+		cancel:           cancel,
+		pending:          make(map[int64]chan rpcResponseEnvelope),
+		pendingApprovals: make(map[string]chan core.PermissionResult),
+	}
+	s.alive.Store(true)
+
+	if err := s.connectDesktopApp(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := s.initialize(); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err := s.ensureThread(resumeID); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err := s.refreshUsage(context.Background()); err != nil {
+		slog.Debug("codex desktop_app: initial rate limit fetch failed", "error", err)
+	}
+	return s, nil
+}
+
+func newDesktopAppClient(ctx context.Context, url, codexHome string) (*appServerSession, error) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	s := &appServerSession{
+		url:              normalizeDesktopAppURL(url),
+		codexHome:        strings.TrimSpace(codexHome),
+		events:           make(chan core.Event, 1),
+		ctx:              sessionCtx,
+		cancel:           cancel,
+		pending:          make(map[int64]chan rpcResponseEnvelope),
+		pendingApprovals: make(map[string]chan core.PermissionResult),
+	}
+	s.alive.Store(true)
+	if err := s.connectDesktopApp(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := s.initialize(); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
 func (s *appServerSession) connect() error {
 	args := []string{"app-server"}
 	if strings.TrimSpace(s.url) != "" {
@@ -255,6 +318,30 @@ func (s *appServerSession) connect() error {
 	go s.readLoop(stdout)
 	go s.stderrLoop(stderr)
 	go s.waitLoop()
+	return nil
+}
+
+func (s *appServerSession) connectDesktopApp() error {
+	url := strings.TrimSpace(s.url)
+	if !isWebSocketURL(url) {
+		return fmt.Errorf("codex desktop_app requires a ws:// or wss:// endpoint; set desktop_app_url or app_server_url (got %q)", url)
+	}
+
+	conn, resp, err := websocket.DefaultDialer.DialContext(s.ctx, url, nil)
+	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("codex desktop_app connect %s failed: HTTP %s: %w", url, resp.Status, err)
+		}
+		return fmt.Errorf("codex desktop_app connect %s failed: %w", url, err)
+	}
+
+	s.procMu.Lock()
+	s.ws = conn
+	s.procMu.Unlock()
+
+	slog.Info("codex desktop_app session connected", "transport", "websocket", "url", url)
+	s.wg.Add(1)
+	go s.readLoopWebSocket(conn)
 	return nil
 }
 
@@ -326,6 +413,9 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	params := map[string]any{
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
+	}
+	if workDir := s.GetWorkDir(); strings.TrimSpace(workDir) != "" {
+		params["cwd"] = workDir
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
@@ -446,6 +536,9 @@ func (s *appServerSession) Send(prompt string, images []core.ImageAttachment, fi
 	params := map[string]any{
 		"threadId": threadID,
 		"input":    input,
+	}
+	if workDir := s.GetWorkDir(); strings.TrimSpace(workDir) != "" {
+		params["cwd"] = workDir
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
@@ -735,6 +828,10 @@ func (s *appServerSession) Close() error {
 		_ = s.stdin.Close()
 		s.stdin = nil
 	}
+	if s.ws != nil {
+		_ = s.ws.Close()
+		s.ws = nil
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
@@ -771,40 +868,7 @@ func (s *appServerSession) readLoop(r io.Reader) {
 		default:
 		}
 
-		data := scanner.Bytes()
-
-		var probe map[string]json.RawMessage
-		if err := json.Unmarshal(data, &probe); err != nil {
-			slog.Debug("codex app-server: invalid JSON", "error", err)
-			continue
-		}
-
-		_, hasID := probe["id"]
-		_, hasMethod := probe["method"]
-
-		switch {
-		case hasID && !hasMethod:
-			// Response to one of our requests.
-			var resp rpcResponseEnvelope
-			if err := json.Unmarshal(data, &resp); err != nil {
-				slog.Debug("codex app-server: bad response envelope", "error", err)
-				continue
-			}
-			s.handleResponse(resp)
-
-		case hasID && hasMethod:
-			// Server-initiated request that requires a response (e.g. approval).
-			s.handleServerRequest(probe)
-
-		default:
-			// Notification (no id).
-			var notif rpcNotificationEnvelope
-			if err := json.Unmarshal(data, &notif); err != nil {
-				slog.Debug("codex app-server: bad notification envelope", "error", err)
-				continue
-			}
-			s.handleNotification(notif.Method, notif.Params)
-		}
+		s.handleRPCMessage(scanner.Bytes())
 	}
 
 	err := scanner.Err()
@@ -826,6 +890,61 @@ func (s *appServerSession) readLoop(r io.Reader) {
 	s.alive.Store(false)
 	s.rejectPending(io.EOF)
 	s.rejectPendingApprovals(io.EOF)
+}
+
+func (s *appServerSession) readLoopWebSocket(conn *websocket.Conn) {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			if s.ctx.Err() == nil {
+				slog.Warn("codex desktop_app websocket read failed", "error", err)
+				s.emitError(fmt.Errorf("codex desktop_app connection closed: %w", err))
+			}
+			s.alive.Store(false)
+			s.rejectPending(err)
+			s.rejectPendingApprovals(err)
+			return
+		}
+		s.handleRPCMessage(data)
+	}
+}
+
+func (s *appServerSession) handleRPCMessage(data []byte) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		slog.Debug("codex app-server: invalid JSON", "error", err)
+		return
+	}
+
+	_, hasID := probe["id"]
+	_, hasMethod := probe["method"]
+
+	switch {
+	case hasID && !hasMethod:
+		var resp rpcResponseEnvelope
+		if err := json.Unmarshal(data, &resp); err != nil {
+			slog.Debug("codex app-server: bad response envelope", "error", err)
+			return
+		}
+		s.handleResponse(resp)
+
+	case hasID && hasMethod:
+		s.handleServerRequest(probe)
+
+	default:
+		var notif rpcNotificationEnvelope
+		if err := json.Unmarshal(data, &notif); err != nil {
+			slog.Debug("codex app-server: bad notification envelope", "error", err)
+			return
+		}
+		s.handleNotification(notif.Method, notif.Params)
+	}
 }
 
 func (s *appServerSession) stderrLoop(r io.Reader) {
@@ -1073,15 +1192,6 @@ func appServerReasoningText(item map[string]any) string {
 		for _, entry := range summary {
 			if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
 				parts = append(parts, text)
-			}
-		}
-	}
-	if len(parts) == 0 {
-		if content, ok := item["content"].([]any); ok {
-			for _, entry := range content {
-				if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
 			}
 		}
 	}
@@ -1438,13 +1548,20 @@ func (s *appServerSession) writeJSON(v any) error {
 
 	s.procMu.Lock()
 	stdin := s.stdin
+	ws := s.ws
 	s.procMu.Unlock()
-	if stdin == nil {
+	if stdin == nil && ws == nil {
 		return fmt.Errorf("codex app-server connection is closed")
 	}
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if ws != nil {
+		if err := ws.WriteMessage(websocket.TextMessage, b); err != nil {
+			return fmt.Errorf("codex desktop_app write: %w", err)
+		}
+		return nil
+	}
 	if _, err := stdin.Write(append(b, '\n')); err != nil {
 		return fmt.Errorf("codex app-server write: %w", err)
 	}

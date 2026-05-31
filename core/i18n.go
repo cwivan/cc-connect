@@ -160,6 +160,7 @@ type MsgKey string
 
 const (
 	MsgStarting                  MsgKey = "starting"
+	MsgWaitingForFirstEvent      MsgKey = "waiting_for_first_event"
 	MsgThinking                  MsgKey = "thinking"
 	MsgTool                      MsgKey = "tool"
 	MsgToolResult                MsgKey = "tool_result"
@@ -626,6 +627,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⏳ 處理中...",
 		LangJapanese:           "⏳ 処理中...",
 		LangSpanish:            "⏳ Procesando...",
+	},
+	MsgWaitingForFirstEvent: {
+		LangEnglish:            "⏳ Codex is still starting this turn; waiting for the first event...",
+		LangChinese:            "⏳ Codex 正在启动本轮会话，继续等待首个事件...",
+		LangTraditionalChinese: "⏳ Codex 正在啟動本輪會話，繼續等待首個事件...",
+		LangJapanese:           "⏳ Codex is still starting this turn; waiting for the first event...",
+		LangSpanish:            "⏳ Codex sigue iniciando este turno; esperando el primer evento...",
 	},
 	MsgThinking: {
 		LangEnglish: "💭 %s",
