@@ -1338,8 +1338,13 @@ app_secret = "your-feishu-app-secret"
 # =============================================================================
 # Requires: npm install -g @openai/codex
 # 需要安装：npm install -g @openai/codex
-# Codex uses `codex exec --json` under the hood.
-# Codex 底层使用 `codex exec --json` 命令。
+# Codex backend is configurable. The default "exec" backend uses
+# `codex exec --json`; "app_server" uses the Codex app-server protocol so
+# sessions are written in the App-compatible format.
+# backend = "exec"       # default
+# backend = "app_server" # recommended when you want Codex App visibility; "app" is also accepted
+# app_server_url = "stdio" # optional; use stdio transport for app-server
+# Codex 可选择 exec 或 app_server 后端；需要 Codex App 可见性时推荐 app_server。
 
 # [[projects]]
 # name = "my-codex-project"
@@ -1350,6 +1355,8 @@ app_secret = "your-feishu-app-secret"
 # [projects.agent.options]
 # work_dir = "/path/to/project"
 # mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
+# backend = "app_server" # "exec" | "app_server" | "app"
+# app_server_url = "stdio"
 #
 # Mode options / 模式说明:
 # - "suggest":   ask permission for every tool call (default, safest) / 每次调用都需确认（默认，最安全）

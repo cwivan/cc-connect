@@ -5334,6 +5334,25 @@ func filterOwnedSessions(sessions []AgentSessionInfo, known map[string]struct{})
 
 const listPageSize = 20
 
+func clampListPage(total, page int) (clampedPage, totalPages, start, end int) {
+	if total <= 0 {
+		return 1, 0, 0, 0
+	}
+	totalPages = (total + listPageSize - 1) / listPageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start = (page - 1) * listPageSize
+	end = start + listPageSize
+	if end > total {
+		end = total
+	}
+	return page, totalPages, start, end
+}
+
 // dirCardPageSize is the max directory history rows per card page (Feishu / other card UIs).
 const dirCardPageSize = 20
 
@@ -5377,24 +5396,14 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 			return
 		}
 
-		total := len(agentSessions)
-		totalPages := (total + listPageSize - 1) / listPageSize
-
 		page := 1
 		if len(args) > 0 {
 			if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
 				page = n
 			}
 		}
-		if page > totalPages {
-			page = totalPages
-		}
-
-		start := (page - 1) * listPageSize
-		end := start + listPageSize
-		if end > total {
-			end = total
-		}
+		total := len(agentSessions)
+		page, totalPages, start, end := clampListPage(total, page)
 
 		agentName := agent.Name()
 		activeSession := sessions.GetOrCreateActive(msg.SessionKey)
@@ -10548,16 +10557,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 	}
 
 	total := len(agentSessions)
-	totalPages := (total + listPageSize - 1) / listPageSize
-	if page > totalPages {
-		page = totalPages
-	}
-
-	start := (page - 1) * listPageSize
-	end := start + listPageSize
-	if end > total {
-		end = total
-	}
+	page, totalPages, start, end := clampListPage(total, page)
 
 	agentName := agent.Name()
 	activeSession := sessions.GetOrCreateActive(sessionKey)

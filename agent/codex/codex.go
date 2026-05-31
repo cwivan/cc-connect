@@ -38,7 +38,7 @@ type Agent struct {
 	cliBin          string   // CLI binary name, default "codex"
 	cliExtraArgs    []string // extra args parsed from cli_path after the binary
 	providers       []core.ProviderConfig
-	activeIdx       int // -1 = no provider set
+	activeIdx       int      // -1 = no provider set
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
 	mu              sync.RWMutex
@@ -108,7 +108,7 @@ func New(opts map[string]any) (core.Agent, error) {
 
 func normalizeBackend(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "app-server", "app_server", "appserver", "ws":
+	case "app", "codex-app", "desktop-app", "app-server", "app_server", "appserver", "ws":
 		return "app_server"
 	default:
 		return "exec"

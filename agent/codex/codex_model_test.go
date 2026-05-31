@@ -70,6 +70,14 @@ func TestNormalizeAppServerURL_EmptyKeepsWebSocketDefault(t *testing.T) {
 	}
 }
 
+func TestNormalizeBackend_AppAliasesUseAppServer(t *testing.T) {
+	for _, raw := range []string{"app", "codex-app", "desktop-app"} {
+		if got := normalizeBackend(raw); got != "app_server" {
+			t.Fatalf("normalizeBackend(%q) = %q, want app_server", raw, got)
+		}
+	}
+}
+
 func TestWorkspaceAgentOptions_PreservesStdIOAppServerURL(t *testing.T) {
 	a := &Agent{
 		backend:      "app_server",

@@ -3073,6 +3073,31 @@ func TestRenderListCard_DisplaysSessionTimeInLocalTimezone(t *testing.T) {
 	}
 }
 
+func TestRenderListCard_ClampsNonPositivePage(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	sessions := []AgentSessionInfo{{
+		ID:           "session-a",
+		Summary:      "First session",
+		MessageCount: 3,
+		ModifiedAt:   time.Date(2026, 3, 11, 2, 0, 0, 0, time.UTC),
+	}}
+	e := NewEngine("test", &stubListAgent{sessions: sessions}, []Platform{p}, "", LangEnglish)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("renderListCard panicked for page 0: %v", r)
+		}
+	}()
+	card, err := e.renderListCard("feishu:user1", 0)
+	if err != nil {
+		t.Fatalf("renderListCard() error = %v", err)
+	}
+	text := card.RenderText()
+	if !strings.Contains(text, "First session") {
+		t.Fatalf("card text = %q, want first page session", text)
+	}
+}
+
 func TestCmdCurrent_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
