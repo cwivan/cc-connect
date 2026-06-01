@@ -103,6 +103,9 @@ opencode --version
 qodercli --version
 ```
 
+For Codex App-visible sessions through Feishu, use the `app_server` backend:
+[docs/codex-app-server.zh-CN.md](docs/codex-app-server.zh-CN.md).
+
 ## Step 3: Create config.toml
 
 > **💡 Recommended: Use the Web UI** — After installing, run `cc-connect web` to configure the web admin and open the dashboard in your browser. You can visually create projects, add platforms, manage API providers, and even chat with your agent directly from the browser — no need to edit TOML files by hand. **Note:** `cc-connect web` only configures and opens the browser — you still need to run `cc-connect` separately to start the service.
