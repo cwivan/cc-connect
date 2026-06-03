@@ -588,6 +588,14 @@ func (a *stubListAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, err
 	return a.sessions, nil
 }
 
+type authoritativeListAgent struct {
+	stubListAgent
+}
+
+func (a *authoritativeListAgent) AgentSessionSummaryAuthoritative() bool {
+	return true
+}
+
 type stubDeleteAgent struct {
 	stubListAgent
 	deleted []string
@@ -3095,6 +3103,32 @@ func TestRenderListCard_ClampsNonPositivePage(t *testing.T) {
 	text := card.RenderText()
 	if !strings.Contains(text, "First session") {
 		t.Fatalf("card text = %q, want first page session", text)
+	}
+}
+
+func TestRenderListCard_AuthoritativeSummaryOverridesCachedSessionName(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	agent := &authoritativeListAgent{stubListAgent: stubListAgent{
+		sessions: []AgentSessionInfo{{
+			ID:           "thread-app",
+			Summary:      "Codex App title",
+			MessageCount: 3,
+			ModifiedAt:   time.Date(2026, 3, 11, 2, 0, 0, 0, time.UTC),
+		}},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	e.sessions.SetSessionName("thread-app", "stale last message")
+
+	card, err := e.renderListCard("feishu:user1", 1)
+	if err != nil {
+		t.Fatalf("renderListCard() error = %v", err)
+	}
+	text := card.RenderText()
+	if !strings.Contains(text, "Codex App title") {
+		t.Fatalf("card text = %q, want authoritative app title", text)
+	}
+	if strings.Contains(text, "stale last message") {
+		t.Fatalf("card text = %q, should not show stale cached session name", text)
 	}
 }
 

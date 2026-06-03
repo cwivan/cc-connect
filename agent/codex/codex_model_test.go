@@ -119,6 +119,26 @@ func TestWorkspaceAgentOptions_PreservesStdIOAppServerURL(t *testing.T) {
 	}
 }
 
+func TestAgentSessionSummaryAuthoritativeForAppBackends(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    bool
+	}{
+		{backend: "app_server", want: true},
+		{backend: "desktop_app", want: true},
+		{backend: "exec", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.backend, func(t *testing.T) {
+			a := &Agent{backend: tt.backend}
+			if got := a.AgentSessionSummaryAuthoritative(); got != tt.want {
+				t.Fatalf("AgentSessionSummaryAuthoritative() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorkspaceAgentOptions_IncludesDesktopAppURL(t *testing.T) {
 	a := &Agent{
 		backend:       "desktop_app",

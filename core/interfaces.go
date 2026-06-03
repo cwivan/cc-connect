@@ -289,6 +289,13 @@ type AgentSessionCreator interface {
 	CreateSession(ctx context.Context, name string) (AgentSessionInfo, error)
 }
 
+// AgentSessionSummaryAuthority is implemented by agents whose ListSessions()
+// Summary field is the current user-facing session title rather than a
+// transcript preview. The engine should prefer it over cached local aliases.
+type AgentSessionSummaryAuthority interface {
+	AgentSessionSummaryAuthoritative() bool
+}
+
 // AgentSession represents a running interactive agent session with a persistent process.
 type AgentSession interface {
 	// Send sends a user message (with optional images and files) to the running agent process.

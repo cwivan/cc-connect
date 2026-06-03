@@ -5441,6 +5441,30 @@ func shortSessionID(id string) string {
 	return id[:12]
 }
 
+func agentSessionSummaryAuthoritative(agent Agent) bool {
+	authority, ok := agent.(AgentSessionSummaryAuthority)
+	return ok && authority.AgentSessionSummaryAuthoritative()
+}
+
+func normalizedSessionSummary(summary string) string {
+	displayName := strings.ReplaceAll(summary, "\n", " ")
+	return strings.Join(strings.Fields(displayName), " ")
+}
+
+func sessionListDisplayName(agent Agent, sessions *SessionManager, s AgentSessionInfo, empty string) string {
+	summary := normalizedSessionSummary(s.Summary)
+	if agentSessionSummaryAuthoritative(agent) && summary != "" {
+		return truncateRunes(summary, 40)
+	}
+	if cachedName := strings.TrimSpace(sessions.GetSessionName(s.ID)); cachedName != "" {
+		return "📌 " + cachedName
+	}
+	if summary == "" {
+		return empty
+	}
+	return truncateRunes(summary, 40)
+}
+
 func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
@@ -5485,19 +5509,7 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 			if s.ID == activeAgentID {
 				marker = "▶"
 			}
-			displayName := sessions.GetSessionName(s.ID)
-			if displayName != "" {
-				displayName = "📌 " + displayName
-			} else {
-				displayName = strings.ReplaceAll(s.Summary, "\n", " ")
-				displayName = strings.Join(strings.Fields(displayName), " ")
-				if displayName == "" {
-					displayName = "(empty)"
-				}
-				if len([]rune(displayName)) > 40 {
-					displayName = string([]rune(displayName)[:40]) + "…"
-				}
-			}
+			displayName := sessionListDisplayName(agent, sessions, s, "(empty)")
 			if sid := shortSessionID(s.ID); sid != "" {
 				displayName = fmt.Sprintf("%s (`%s`)", displayName, sid)
 			}
@@ -5561,10 +5573,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	session.ClearHistory()
 
 	shortID := shortSessionID(matched.ID)
-	displayName := sessions.GetSessionName(matched.ID)
-	if displayName == "" {
-		displayName = matched.Summary
-	}
+	displayName := sessionListDisplayName(agent, sessions, *matched, e.i18n.T(MsgListEmptySummary))
 	e.reply(p, msg.ReplyCtx,
 		e.i18n.Tf(MsgSwitchSuccess, displayName, shortID, matched.MessageCount))
 }
@@ -6570,11 +6579,7 @@ func (e *Engine) cmdSearch(p Platform, msg *Message, args []string) {
 
 	for _, s := range agentSessions {
 		// Check session name (custom name or summary)
-		customName := sessions.GetSessionName(s.ID)
-		displayName := customName
-		if displayName == "" {
-			displayName = s.Summary
-		}
+		displayName := sessionListDisplayName(agent, sessions, s, "")
 
 		// Match by name/summary
 		if strings.Contains(strings.ToLower(displayName), keyword) {
@@ -10654,19 +10659,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 		if s.ID == activeAgentID {
 			marker = "▶"
 		}
-		displayName := sessions.GetSessionName(s.ID)
-		if displayName != "" {
-			displayName = "📌 " + displayName
-		} else {
-			displayName = strings.ReplaceAll(s.Summary, "\n", " ")
-			displayName = strings.Join(strings.Fields(displayName), " ")
-			if displayName == "" {
-				displayName = e.i18n.T(MsgListEmptySummary)
-			}
-			if len([]rune(displayName)) > 40 {
-				displayName = string([]rune(displayName)[:40]) + "…"
-			}
-		}
+		displayName := sessionListDisplayName(agent, sessions, s, e.i18n.T(MsgListEmptySummary))
 		btnType := "default"
 		if s.ID == activeAgentID {
 			btnType = "primary"
@@ -10794,16 +10787,29 @@ func (e *Engine) currentSessionDisplayName(agent Agent, sessions *SessionManager
 	if agentID == "" || agentID == e.i18n.T(MsgSessionNotStarted) {
 		return e.i18n.T(MsgUntitled)
 	}
-	displayName := sessions.GetSessionName(agentID)
-	if displayName != "" {
-		return displayName
-	}
+	var displayName string
 	agentSessions, err := agent.ListSessions(e.ctx)
 	if err == nil {
 		for _, as := range agentSessions {
 			if as.ID == agentID {
-				displayName = strings.ReplaceAll(as.Summary, "\n", " ")
-				displayName = strings.Join(strings.Fields(displayName), " ")
+				if agentSessionSummaryAuthoritative(agent) {
+					displayName = normalizedSessionSummary(as.Summary)
+					if displayName != "" {
+						return displayName
+					}
+				}
+				break
+			}
+		}
+	}
+	displayName = sessions.GetSessionName(agentID)
+	if displayName != "" {
+		return displayName
+	}
+	if err == nil {
+		for _, as := range agentSessions {
+			if as.ID == agentID {
+				displayName = normalizedSessionSummary(as.Summary)
 				break
 			}
 		}

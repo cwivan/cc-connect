@@ -196,6 +196,13 @@ func normalizeReasoningEffort(raw string) string {
 
 func (a *Agent) Name() string { return "codex" }
 
+func (a *Agent) AgentSessionSummaryAuthoritative() bool {
+	a.mu.RLock()
+	backend := a.backend
+	a.mu.RUnlock()
+	return backend == "app_server" || backend == "desktop_app"
+}
+
 func (a *Agent) SetWorkDir(dir string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
